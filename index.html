@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Large Developments Viewer</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://www.seattleinprogress.com; font-src 'none'">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -437,6 +438,19 @@
       text-align: right;
       padding: 8px 0 0;
     }
+
+    /* ── Leaflet popup dark theme ── */
+    .leaflet-popup-content-wrapper {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      padding: 0;
+      color: var(--text);
+    }
+    .leaflet-popup-content { margin: 0; }
+    .leaflet-popup-tip { background: var(--surface); }
+    .leaflet-popup-close-button { color: var(--muted) !important; top: 10px !important; right: 10px !important; }
   </style>
 </head>
 <body>
@@ -522,11 +536,19 @@
   <div class="last-updated" id="last-updated"></div>
 </main>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const API = "https://data.seattle.gov/resource/76t5-zqzr.json";
+// Get a free token at https://data.seattle.gov/profile/app_tokens — do NOT commit a real token here.
+// Set it as a GitHub Actions secret (SOCRATA_TOKEN) and inject at build time, or leave blank for the
+// anonymous rate limit (1000 req/day per IP).
 const APP_TOKEN = "";
+
+// ── HTML escape (API data → innerHTML) ───────────────────────────────────────
+function esc(str) {
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
 const MIN_VALUE = 1_000_000;
 
 // Seattle neighborhood bounding boxes
@@ -909,17 +931,19 @@ function renderGrid(permits) {
     const value      = fmtValue(p.estprojectcost);
     const appDate    = fmtDate(p.applieddate);
     const issDate    = fmtDate(p.issueddate);
-    const addr       = p.originaladdress1 || "Address unknown";
-    const desc       = p.description || "No description provided.";
-    const num        = p.permitnum || "—";
+    const rawAddr    = p.originaladdress1 || "Address unknown";
+    const rawNum     = p.permitnum || "—";
+    const addr       = esc(rawAddr);
+    const desc       = esc(p.description || "No description provided.");
+    const num        = esc(rawNum);
     const units      = extractUnits(p);
     const detailUrl  = p.link?.url ||
       (p._city === "bellevue"
-        ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(num)}/BELLEVUE`
-        : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(num)}`);
+        ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(rawNum)}/BELLEVUE`
+        : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(rawNum)}`);
     const cityStr    = p._city === "bellevue" ? "Bellevue, WA" : "Seattle, WA";
-    const mapsUrl    = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr + ", " + cityStr)}`;
-    const sipId      = p._city === "bellevue" ? null : SIP_INDEX[addr.toUpperCase().trim().replace(/\s+/g, " ")];
+    const mapsUrl    = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
+    const sipId      = p._city === "bellevue" ? null : SIP_INDEX[rawAddr.toUpperCase().trim().replace(/\s+/g, " ")];
     const sipUrl     = sipId ? `https://www.seattleinprogress.com/project/${sipId}` : null;
     const ptLabel    = getPermitTypeLabel(p);
     const dr         = hasDesignReview(p);
@@ -1051,29 +1075,82 @@ function renderMap(permits) {
     const lon = parseFloat(p.longitude);
     if (!lat || !lon) return;
 
-    const status = getStatus(p);
-    const color  = colors[status];
+    const status  = getStatus(p);
+    const color   = colors[status];
+    const use     = getBuildingUse(p);
+    const units   = extractUnits(p);
+    const num     = esc(p.permitnum || "—");
+    const addr    = esc(p.originaladdress1 || p.address || "Address unknown");
+    const desc    = esc((p.description || "No description provided.").slice(0, 200));
+    const ptLabel = getPermitTypeLabel(p);
+    const dr      = hasDesignReview(p);
+    const rawAddr = p.originaladdress1 || p.address || "Address unknown";
+    const rawNum  = p.permitnum || "—";
+
+    const detailUrl = p.link?.url ||
+      (p._city === "bellevue"
+        ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(rawNum)}/BELLEVUE`
+        : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(rawNum)}`);
+    const cityStr = p._city === "bellevue" ? "Bellevue, WA" : "Seattle, WA";
+    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
+    const sipId   = p._city === "bellevue" ? null : SIP_INDEX[rawAddr.toUpperCase().trim().replace(/\s+/g, " ")];
+    const sipUrl  = sipId ? `https://www.seattleinprogress.com/project/${sipId}` : null;
+
+    const statusStyle = {
+      issued:    "background:rgba(251,191,36,0.15);color:#fbbf24",
+      complete:  "background:rgba(52,211,153,0.15);color:#34d399",
+      review:    "background:rgba(108,142,245,0.15);color:#6c8ef5",
+      pending:   "background:rgba(167,139,250,0.15);color:#a78bfa",
+      cancelled: "background:rgba(248,113,113,0.12);color:#f87171",
+      other:     "background:rgba(100,116,139,0.15);color:#64748b",
+    }[status] || "background:rgba(100,116,139,0.15);color:#64748b";
+
+    const ptStyle = {
+      "new-construction": "background:rgba(251,191,36,0.12);color:#fbbf24",
+      "demolition":       "background:rgba(248,113,113,0.12);color:#f87171",
+      "alteration":       "background:rgba(251,146,60,0.12);color:#fb923c",
+      "land-use":         "background:rgba(240,147,251,0.12);color:#c084fc",
+      "":                 "background:rgba(100,116,139,0.12);color:#64748b",
+    }[ptLabel.cls] || "background:rgba(100,116,139,0.12);color:#64748b";
+
+    const useStyle = {
+      "multifamily": "background:rgba(99,179,237,0.15);color:#63b3ed",
+      "office":      "background:rgba(154,205,50,0.15);color:#a3d977",
+      "mixed-use":   "background:rgba(240,147,251,0.15);color:#e879f9",
+      "commercial":  "background:rgba(251,146,60,0.15);color:#fb923c",
+      "other":       "background:rgba(100,116,139,0.12);color:#64748b",
+    }[use] || "background:rgba(100,116,139,0.12);color:#64748b";
 
     const circle = L.circleMarker([lat, lon], {
       radius: 7, fillColor: color, color: "#fff",
       weight: 1.5, opacity: 0.9, fillOpacity: 0.85
     }).addTo(map);
 
-    const use   = getBuildingUse(p);
-    const units = extractUnits(p);
     circle.bindPopup(`
-      <div style="font-family:sans-serif;min-width:220px">
-        <div style="font-weight:700;font-size:13px;margin-bottom:4px">${p.originaladdress1 || p.address || "Unknown"}</div>
-        <div style="font-size:11px;color:#888;margin-bottom:6px">${p.permitnum || ""}</div>
-        <div style="font-size:12px;margin-bottom:8px;line-height:1.4">${(p.description||"").slice(0,160)}…</div>
-        <div style="font-size:11px;line-height:1.8">
-          <b>Use:</b> ${useLabel(use)}${units ? ` · ${units} units` : ""}<br>
-          <b>Value:</b> ${fmtValue(p.estprojectcost)}<br>
-          <b>Status:</b> ${statusLabel(status)}<br>
-          <b>Applied:</b> ${fmtDate(p.applieddate)}<br>
-          <b>Issued:</b> ${fmtDate(p.issueddate)}
+      <div style="padding:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">
+          <a href="${detailUrl}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;color:#6c8ef5;background:rgba(108,142,245,0.12);padding:2px 8px;border-radius:4px;text-decoration:none">${num}</a>
+          <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap;${statusStyle}">${statusLabel(status)}</span>
         </div>
-      </div>`);
+        <div style="font-size:15px;font-weight:600;line-height:1.3;margin-bottom:6px;color:#e2e8f0">${addr}</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+          <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:0.5px;${ptStyle}">${ptLabel.label}</span>
+          <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:0.5px;${useStyle}">${useLabel(use)}</span>
+          ${units ? `<span style="font-size:11px;color:#64748b">${units} units</span>` : ""}
+        </div>
+        <div style="color:#64748b;font-size:13px;line-height:1.5;margin-bottom:10px">${desc}</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">
+          <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:2px">Est. Value</div><div style="font-size:13px;font-weight:700;color:#6c8ef5">${fmtValue(p.estprojectcost)}</div></div>
+          <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:2px">Applied</div><div style="font-size:13px;font-weight:500;color:#e2e8f0">${fmtDate(p.applieddate)}</div></div>
+          <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:2px">Issued</div><div style="font-size:13px;font-weight:500;color:#e2e8f0">${fmtDate(p.issueddate)}</div></div>
+        </div>
+        <div style="border-top:1px solid #2e3350;padding-top:8px;display:flex;gap:12px;flex-wrap:wrap">
+          <a href="${detailUrl}" target="_blank" rel="noopener" style="color:#6c8ef5;font-size:12px;font-weight:600;text-decoration:none">Permit Portal ↗</a>
+          ${dr ? `<a href="${detailUrl}" target="_blank" rel="noopener" style="color:#c084fc;font-size:12px;font-weight:600;text-decoration:none">Design Review ↗</a>` : ""}
+          ${sipUrl ? `<a href="${sipUrl}" target="_blank" rel="noopener" style="color:#fb923c;font-size:12px;font-weight:600;text-decoration:none">SeattleInProgress ↗</a>` : ""}
+          <a href="${mapsUrl}" target="_blank" rel="noopener" style="color:#34d399;font-size:12px;font-weight:600;text-decoration:none">Google Maps ↗</a>
+        </div>
+      </div>`, { maxWidth: 360 });
 
     markers.push(circle);
   });
