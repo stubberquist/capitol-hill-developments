@@ -1,0 +1,50 @@
+name: Refresh SeattleInProgress Index
+
+on:
+  schedule:
+    - cron: '0 14 * * 1'  # Every Monday at 6am PT (14:00 UTC)
+  workflow_dispatch:       # Allow manual trigger from GitHub UI
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch and embed SIP index
+        run: |
+          NEW_INDEX=$(curl -s "https://www.seattleinprogress.com/api/geo?left=-122.46&right=-122.23&top=47.75&bottom=47.48" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps({p['address']:p['id'] for p in d}, separators=(',',':')))")
+
+          COUNT=$(echo "$NEW_INDEX" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
+          DATE=$(date +%Y-%m-%d)
+
+          python3 - index.html "$NEW_INDEX" "$COUNT" "$DATE" << 'PYEOF'
+          import sys, re
+          html_path, new_index, count, date = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+          with open(html_path) as f:
+              html = f.read()
+          new_const   = f"const SIP_INDEX = {new_index};"
+          new_comment = f"// SeattleInProgress index (pre-fetched {date}, {count} active DR projects) ──"
+          html = re.sub(
+              r'// SeattleInProgress index \(pre-fetched [^)]+\) ──\nconst SIP_INDEX = \{[^;]+\};',
+              new_comment + "\n" + new_const,
+              html
+          )
+          with open(html_path, "w") as f:
+              f.write(html)
+          print(f"Done — {count} projects written to index.html")
+          PYEOF
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet index.html || (
+            git add index.html &&
+            git commit -m "chore: refresh SeattleInProgress index $(date +%Y-%m-%d)" &&
+            git push
+          )
