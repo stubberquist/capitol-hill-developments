@@ -439,6 +439,37 @@
       padding: 8px 0 0;
     }
 
+    /* ── Map: Recent Updates control ── */
+    #map-recent-ctrl {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      background: rgba(26,29,39,0.92);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--text);
+      backdrop-filter: blur(4px);
+    }
+    .recent-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 3px 9px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+      transition: all 0.15s;
+    }
+    .recent-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
     /* ── Leaflet popup dark theme ── */
     .leaflet-popup-content-wrapper {
       background: var(--surface);
@@ -607,6 +638,8 @@ let map = null;
 let markers = [];
 let currentView = "grid";
 let currentCity = "seattle";
+let recentMode  = false;
+let recentCount = 20;
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
 async function fetchPermits() {
@@ -822,6 +855,17 @@ function fmtValue(v) {
 function fmtDate(d) {
   if (!d) return "—";
   return new Date(d).toLocaleDateString("en-US", { year:"numeric", month:"short", day:"numeric" });
+}
+
+// Most recent milestone date across all date fields — used for "recent updates" sort
+function lastActivityDate(p) {
+  const candidates = [
+    p.issueddate, p.readytoissuedate, p.planreviewcompletedate,
+    p.initialreviewcompletedate, p.applieddate, p.finaleddate,
+  ].filter(Boolean);
+  return candidates.length
+    ? new Date(Math.max(...candidates.map(d => new Date(d))))
+    : new Date(0);
 }
 
 // ── Filter / sort ─────────────────────────────────────────────────────────────
@@ -1065,8 +1109,38 @@ function renderMap(permits) {
     document.getElementById("map").appendChild(legend);
   }
 
+  // Rebuild recent-updates control (remove + recreate so button active state stays in sync)
+  const prevCtrl = document.getElementById("map-recent-ctrl");
+  if (prevCtrl) prevCtrl.remove();
+  const recentCtrl = document.createElement("div");
+  recentCtrl.id = "map-recent-ctrl";
+  recentCtrl.innerHTML = `<div class="leg-title">Recent Updates</div>
+    <div style="display:flex;gap:4px;margin-top:6px">
+      ${[{n:0,label:"All"},{n:10,label:"Top 10"},{n:20,label:"Top 20"},{n:50,label:"Top 50"}].map(({n,label}) => {
+        const active = n === 0 ? !recentMode : (recentMode && recentCount === n);
+        return `<button class="recent-btn${active?" active":""}" data-n="${n}">${label}</button>`;
+      }).join("")}
+    </div>`;
+  document.getElementById("map").appendChild(recentCtrl);
+  recentCtrl.querySelectorAll(".recent-btn").forEach(btn => {
+    btn.addEventListener("click", function () {
+      const n = parseInt(this.dataset.n);
+      recentMode  = n > 0;
+      if (n > 0) recentCount = n;
+      renderMap(getFilteredList());
+    });
+  });
+
   markers.forEach(m => m.remove());
   markers = [];
+
+  // Compute top-N most recently active permits when filter is on
+  let recentSet = null;
+  if (recentMode && permits.length) {
+    const withCoords = permits.filter(p => parseFloat(p.latitude) && parseFloat(p.longitude));
+    const sorted = [...withCoords].sort((a, b) => lastActivityDate(b) - lastActivityDate(a));
+    recentSet = new Set(sorted.slice(0, recentCount).map(p => p.permitnum));
+  }
 
   const colors = MAP_COLORS;
 
@@ -1075,8 +1149,9 @@ function renderMap(permits) {
     const lon = parseFloat(p.longitude);
     if (!lat || !lon) return;
 
-    const status  = getStatus(p);
-    const color   = colors[status];
+    const status   = getStatus(p);
+    const color    = colors[status];
+    const isRecent = !recentSet || recentSet.has(p.permitnum);
     const use     = getBuildingUse(p);
     const units   = extractUnits(p);
     const num     = esc(p.permitnum || "—");
@@ -1121,9 +1196,11 @@ function renderMap(permits) {
       "other":       "background:rgba(100,116,139,0.12);color:#64748b",
     }[use] || "background:rgba(100,116,139,0.12);color:#64748b";
 
+    if (recentSet && !isRecent) return;
+
     const circle = L.circleMarker([lat, lon], {
-      radius: 7, fillColor: color, color: "#fff",
-      weight: 1.5, opacity: 0.9, fillOpacity: 0.85
+      radius: recentSet ? 9 : 7, fillColor: color, color: "#fff",
+      weight: 1.5, opacity: 0.9, fillOpacity: 0.9,
     }).addTo(map);
 
     circle.bindPopup(`
@@ -1143,6 +1220,7 @@ function renderMap(permits) {
           <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:2px">Est. Value</div><div style="font-size:13px;font-weight:700;color:#6c8ef5">${fmtValue(p.estprojectcost)}</div></div>
           <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:2px">Applied</div><div style="font-size:13px;font-weight:500;color:#e2e8f0">${fmtDate(p.applieddate)}</div></div>
           <div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;font-weight:600;margin-bottom:2px">Issued</div><div style="font-size:13px;font-weight:500;color:#e2e8f0">${fmtDate(p.issueddate)}</div></div>
+          ${recentMode ? `<div><div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#6c8ef5;font-weight:600;margin-bottom:2px">Last Activity</div><div style="font-size:13px;font-weight:500;color:#6c8ef5">${fmtDate(lastActivityDate(p))}</div></div>` : ""}
         </div>
         <div style="border-top:1px solid #2e3350;padding-top:8px;display:flex;gap:12px;flex-wrap:wrap">
           <a href="${detailUrl}" target="_blank" rel="noopener" style="color:#6c8ef5;font-size:12px;font-weight:600;text-decoration:none">Permit Portal ↗</a>
