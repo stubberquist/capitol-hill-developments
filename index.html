@@ -88,13 +88,47 @@
       flex-wrap: wrap;
     }
 
+    .filter-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
     .controls label {
       color: var(--muted);
       font-size: 12px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-right: 4px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 640px) {
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 12px 16px;
+      }
+      .filter-group {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 3px;
+      }
+      .filter-group select { width: 100%; }
+      #search {
+        grid-column: 1 / -1;
+        min-width: unset !important;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .view-toggle {
+        grid-column: 1 / -1;
+        margin-left: 0;
+        justify-content: center;
+      }
+      header { flex-direction: column; align-items: flex-start; gap: 12px; }
+      .stats { gap: 12px; }
     }
 
     select, input[type="text"] {
@@ -500,52 +534,64 @@
 </header>
 
 <div class="controls">
-  <label>City</label>
-  <select id="filter-city">
-    <option value="seattle">Seattle</option>
-    <option value="bellevue">Bellevue</option>
-  </select>
+  <div class="filter-group">
+    <label>City</label>
+    <select id="filter-city">
+      <option value="seattle">Seattle</option>
+      <option value="bellevue">Bellevue</option>
+    </select>
+  </div>
 
-  <label>Neighborhood</label>
-  <select id="filter-neighborhood">
-    <option value="">All Seattle</option>
-  </select>
+  <div class="filter-group">
+    <label>Neighborhood</label>
+    <select id="filter-neighborhood">
+      <option value="">All Seattle</option>
+    </select>
+  </div>
 
-  <label>Status</label>
-  <select id="filter-status">
-    <option value="">All</option>
-    <option value="issued">In Progress</option>
-    <option value="complete">Completed</option>
-    <option value="review">In Review</option>
-    <option value="pending">Pending / Applied</option>
-    <option value="cancelled">Cancelled</option>
-  </select>
+  <div class="filter-group">
+    <label>Status</label>
+    <select id="filter-status">
+      <option value="">All</option>
+      <option value="issued">In Progress</option>
+      <option value="complete">Completed</option>
+      <option value="review">In Review</option>
+      <option value="pending">Pending / Applied</option>
+      <option value="cancelled">Cancelled</option>
+    </select>
+  </div>
 
-  <label>Building Use</label>
-  <select id="filter-use">
-    <option value="">All</option>
-    <option value="multifamily">Multifamily / Residential</option>
-    <option value="office">Office</option>
-    <option value="mixed-use">Mixed-Use</option>
-    <option value="commercial">Commercial</option>
-  </select>
+  <div class="filter-group">
+    <label>Building Use</label>
+    <select id="filter-use">
+      <option value="">All</option>
+      <option value="multifamily">Multifamily / Residential</option>
+      <option value="office">Office</option>
+      <option value="mixed-use">Mixed-Use</option>
+      <option value="commercial">Commercial</option>
+    </select>
+  </div>
 
-  <label>Min Value</label>
-  <select id="filter-minval">
-    <option value="1000000">$1M+</option>
-    <option value="5000000">$5M+</option>
-    <option value="10000000">$10M+</option>
-    <option value="25000000">$25M+</option>
-    <option value="50000000">$50M+</option>
-  </select>
+  <div class="filter-group">
+    <label>Min Value</label>
+    <select id="filter-minval">
+      <option value="1000000">$1M+</option>
+      <option value="5000000">$5M+</option>
+      <option value="10000000">$10M+</option>
+      <option value="25000000">$25M+</option>
+      <option value="50000000">$50M+</option>
+    </select>
+  </div>
 
-  <label>Sort</label>
-  <select id="sort-by">
-    <option value="value_desc">Highest Value</option>
-    <option value="date_desc">Newest First</option>
-    <option value="date_asc">Oldest First</option>
-    <option value="address">Address A–Z</option>
-  </select>
+  <div class="filter-group">
+    <label>Sort</label>
+    <select id="sort-by">
+      <option value="value_desc">Highest Value</option>
+      <option value="date_desc">Newest First</option>
+      <option value="date_asc">Oldest First</option>
+      <option value="address">Address A–Z</option>
+    </select>
+  </div>
 
   <input type="text" id="search" placeholder="Search address or description…" style="min-width:200px" />
 
