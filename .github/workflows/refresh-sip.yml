@@ -1,4 +1,4 @@
-name: Refresh SeattleInProgress Index
+name: Refresh Embedded Data (SIP index + Zillow market data)
 
 on:
   schedule:
@@ -17,12 +17,15 @@ jobs:
       - name: Fetch and embed SIP index
         run: bash refresh-sip-index.sh
 
+      - name: Fetch and embed Zillow market data
+        run: bash refresh-market-data.sh
+
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git diff --quiet index.html || (
             git add index.html &&
-            git commit -m "chore: refresh SeattleInProgress index $(date +%Y-%m-%d)" &&
+            git commit -m "chore: refresh embedded data $(date +%Y-%m-%d)" &&
             git push
           )
