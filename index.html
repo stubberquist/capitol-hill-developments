@@ -502,6 +502,97 @@
       color: #fff;
     }
 
+    /* ── Analytics view ── */
+    #analytics-view { display: none; }
+
+    .an-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .an-note { font-size: 12px; color: var(--muted); }
+
+    .scope-toggle { display: flex; gap: 4px; }
+    .scope-toggle button {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.15s;
+    }
+    .scope-toggle button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .an-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .an-stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+    }
+    .an-stat .label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .an-stat .num { font-size: 26px; font-weight: 700; color: var(--accent); }
+    .an-stat .delta {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 20px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .an-stat .delta.up   { background: rgba(52,211,153,0.15);  color: var(--green); }
+    .an-stat .delta.down { background: rgba(248,113,113,0.12); color: var(--red); }
+    .an-stat .vs { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+    .an-charts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 16px;
+    }
+    @media (max-width: 640px) {
+      .an-charts { grid-template-columns: 1fr; }
+    }
+
+    .an-chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .an-chart-card.wide { grid-column: 1 / -1; }
+    .an-chart-card h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+    .an-chart-card .chart-wrap { position: relative; height: 260px; }
+
     /* ── Leaflet popup dark theme ── */
     .leaflet-popup-content-wrapper {
       background: var(--surface);
@@ -596,11 +687,29 @@
   <div class="view-toggle">
     <button id="btn-grid" class="active" onclick="setView('grid')">⊞ Cards</button>
     <button id="btn-map" onclick="setView('map')">⊕ Map</button>
+    <button id="btn-analytics" onclick="setView('analytics')">📈 Analytics</button>
   </div>
 </div>
 
 <main>
   <div id="map-view"><div id="map"></div></div>
+  <div id="analytics-view">
+    <div class="an-toolbar">
+      <div class="scope-toggle">
+        <button id="scope-all" class="active">All Permits</button>
+        <button id="scope-large">$1M+ Projects</button>
+      </div>
+      <span class="an-note" id="an-note">Citywide totals · not affected by the filters above (except City)</span>
+    </div>
+    <div class="an-stats" id="an-stats"></div>
+    <div class="an-charts">
+      <div class="an-chart-card"><h3>Housing Units Added per Year</h3><div class="chart-wrap"><canvas id="chart-units"></canvas></div></div>
+      <div class="an-chart-card"><h3>Permits Filed per Year</h3><div class="chart-wrap"><canvas id="chart-permits"></canvas></div></div>
+      <div class="an-chart-card"><h3>Total Project Value per Year</h3><div class="chart-wrap"><canvas id="chart-value"></canvas></div></div>
+      <div class="an-chart-card" id="card-review"><h3>Avg Plan Review Days per Year</h3><div class="chart-wrap"><canvas id="chart-review"></canvas></div></div>
+      <div class="an-chart-card wide"><h3>Permits Filed per Month · Trailing 24 Months</h3><div class="chart-wrap"><canvas id="chart-monthly"></canvas></div></div>
+    </div>
+  </div>
   <div id="grid-view">
     <div class="state-msg">
       <div class="spinner"></div>
@@ -612,6 +721,7 @@
 </main>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js" integrity="sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=" crossorigin="anonymous"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const API = "https://data.seattle.gov/resource/76t5-zqzr.json";
@@ -1253,18 +1363,243 @@ function renderMap(permits) {
   });
 }
 
+// ── Analytics ─────────────────────────────────────────────────────────────────
+// Server-side aggregates over the FULL datasets (not just the 5k loaded permits).
+let analyticsScope = false;          // false = all permits, true = $1M+ only
+const analyticsCache = new Map();    // `${city}:${scope}` → Promise<data>
+const anCharts = {};                 // canvas id → Chart instance
+
+if (window.Chart) {
+  Chart.defaults.color = "#64748b";
+  Chart.defaults.borderColor = "rgba(46,51,80,0.5)";
+  Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+}
+
+function isoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+
+async function soqlFetch(query) {
+  const params = new URLSearchParams(query);
+  if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
+  const res = await fetch(`${API}?${params}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function arcStats(where, stats, groupBy) {
+  const params = new URLSearchParams({
+    where,
+    outStatistics: JSON.stringify(stats),
+    returnGeometry: "false",
+    f: "json",
+  });
+  if (groupBy) params.set("groupByFieldsForStatistics", groupBy);
+  const res = await fetch(`${BELLEVUE_API}?${params}`);
+  if (!res.ok) throw new Error(`Bellevue API HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || "Bellevue query failed");
+  return (data.features || []).map(f => f.attributes);
+}
+
+function fmtMonthLabel(y, m) {
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+}
+
+async function fetchSeattleAnalytics(largeOnly) {
+  const now       = new Date();
+  const y         = now.getFullYear();
+  const today     = isoDate(now);
+  const priorD    = new Date(now); priorD.setFullYear(y - 1);
+  const priorToday = isoDate(priorD);
+  const startYear = y - 9;
+  const mS        = new Date(now); mS.setMonth(mS.getMonth() - 23);
+  const monthStart = `${mS.getFullYear()}-${String(mS.getMonth()+1).padStart(2,"0")}-01`;
+  const scope     = largeOnly ? " AND estprojectcost >= 1000000" : "";
+  const ytdSelect = "count(*) AS permits, sum(housingunitsadded) AS units, sum(estprojectcost) AS value";
+
+  const [yearly, ytd, ytdPrior, review, monthly] = await Promise.all([
+    soqlFetch({ "$select": "date_extract_y(applieddate) AS year, " + ytdSelect,
+                "$group": "year", "$order": "year",
+                "$where": `applieddate >= '${startYear}-01-01'${scope}` }),
+    soqlFetch({ "$select": ytdSelect, "$where": `applieddate between '${y}-01-01' and '${today}'${scope}` }),
+    soqlFetch({ "$select": ytdSelect, "$where": `applieddate between '${y-1}-01-01' and '${priorToday}'${scope}` }),
+    soqlFetch({ "$select": "date_extract_y(applieddate) AS year, avg(totaldaysplanreview) AS days",
+                "$group": "year", "$order": "year",
+                "$where": `applieddate >= '${startYear}-01-01' AND totaldaysplanreview IS NOT NULL${scope}` })
+      .catch(() => null),
+    soqlFetch({ "$select": "date_trunc_ym(applieddate) AS month, count(*) AS permits",
+                "$group": "month", "$order": "month",
+                "$where": `applieddate >= '${monthStart}' AND applieddate <= '${today}'${scope}` }),
+  ]);
+
+  return {
+    yearly: yearly
+      .map(r => ({ year: +r.year, permits: +r.permits, units: +(r.units || 0), value: +(r.value || 0) }))
+      .filter(r => r.year >= startYear && r.year <= y),
+    ytd:      { permits: +ytd[0].permits,      units: +(ytd[0].units || 0),      value: +(ytd[0].value || 0) },
+    ytdPrior: { permits: +ytdPrior[0].permits, units: +(ytdPrior[0].units || 0), value: +(ytdPrior[0].value || 0) },
+    review: review
+      ? review.map(r => ({ year: +r.year, days: Math.round(+r.days) })).filter(r => r.year >= startYear && r.year <= y)
+      : null,
+    monthly: monthly.map(r => {
+      const d = new Date(r.month);
+      return { label: fmtMonthLabel(d.getUTCFullYear(), d.getUTCMonth() + 1), permits: +r.permits };
+    }),
+  };
+}
+
+async function fetchBellevueAnalytics(largeOnly) {
+  const now       = new Date();
+  const y         = now.getFullYear();
+  const today     = isoDate(now);
+  const priorD    = new Date(now); priorD.setFullYear(y - 1);
+  const priorToday = isoDate(priorD);
+  const startYear = y - 9;
+  const mS        = new Date(now); mS.setMonth(mS.getMonth() - 23);
+  const monthStart = `${mS.getFullYear()}-${String(mS.getMonth()+1).padStart(2,"0")}-01`;
+  const scope     = largeOnly ? " AND VALUATION >= 1000000" : "";
+  const stats = [
+    { statisticType: "count", onStatisticField: "PERMITNUMBER",         outStatisticFieldName: "permits" },
+    { statisticType: "sum",   onStatisticField: "DWELLINGUNITSCREATED", outStatisticFieldName: "units" },
+    { statisticType: "sum",   onStatisticField: "VALUATION",            outStatisticFieldName: "value" },
+  ];
+
+  const [yearly, ytd, ytdPrior, monthly] = await Promise.all([
+    arcStats(`APPLIEDDATE >= DATE '${startYear}-01-01'${scope}`, stats, "EXTRACT(YEAR FROM APPLIEDDATE)"),
+    arcStats(`APPLIEDDATE BETWEEN DATE '${y}-01-01' AND DATE '${today}'${scope}`, stats),
+    arcStats(`APPLIEDDATE BETWEEN DATE '${y-1}-01-01' AND DATE '${priorToday}'${scope}`, stats),
+    arcStats(`APPLIEDDATE >= DATE '${monthStart}' AND APPLIEDDATE <= DATE '${today}'${scope}`, stats,
+             "EXTRACT(YEAR FROM APPLIEDDATE),EXTRACT(MONTH FROM APPLIEDDATE)"),
+  ]);
+
+  const one = rows => ({ permits: +(rows[0]?.permits || 0), units: +(rows[0]?.units || 0), value: +(rows[0]?.value || 0) });
+
+  return {
+    yearly: yearly
+      .map(r => ({ year: +r.EXPR_1, permits: +r.permits, units: +(r.units || 0), value: +(r.value || 0) }))
+      .filter(r => r.year >= startYear && r.year <= y)
+      .sort((a, b) => a.year - b.year),
+    ytd: one(ytd),
+    ytdPrior: one(ytdPrior),
+    review: null,  // Bellevue has no plan-review-days field
+    monthly: monthly
+      .map(r => ({ y: +r.EXPR_1, m: +r.EXPR_2, permits: +r.permits }))
+      .sort((a, b) => a.y - b.y || a.m - b.m)
+      .map(r => ({ label: fmtMonthLabel(r.y, r.m), permits: r.permits })),
+  };
+}
+
+function makeChart(id, type, labels, data, { color = "#6c8ef5", money = false, fill = false } = {}) {
+  if (anCharts[id]) anCharts[id].destroy();
+  anCharts[id] = new Chart(document.getElementById(id), {
+    type,
+    data: { labels, datasets: [{
+      data,
+      backgroundColor: type === "bar" ? color + "BF" : (fill ? color + "22" : "transparent"),
+      borderColor: color,
+      borderWidth: type === "bar" ? 0 : 2,
+      borderRadius: 4,
+      fill: type === "line" ? fill : false,
+      tension: 0.3,
+      pointRadius: labels.length > 15 ? 2 : 3,
+      pointBackgroundColor: color,
+    }]},
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#22263a", borderColor: "#2e3350", borderWidth: 1,
+          titleColor: "#e2e8f0", bodyColor: "#e2e8f0", padding: 10, displayColors: false,
+          callbacks: money ? { label: ctx => fmtValue(ctx.parsed.y) } : {},
+        },
+      },
+      scales: {
+        x: { grid: { display: false } },
+        y: { beginAtZero: true, ticks: money ? { callback: v => fmtValue(v) } : {} },
+      },
+    },
+  });
+}
+
+function renderAnalytics(d) {
+  const cards = [
+    { label: "Permits Filed YTD",        cur: d.ytd.permits, prev: d.ytdPrior.permits, fmt: n => n.toLocaleString() },
+    { label: "Housing Units Added YTD",  cur: d.ytd.units,   prev: d.ytdPrior.units,   fmt: n => Math.round(n).toLocaleString() },
+    { label: "Total Project Value YTD",  cur: d.ytd.value,   prev: d.ytdPrior.value,   fmt: fmtValue },
+  ];
+  document.getElementById("an-stats").innerHTML = cards.map(c => {
+    const delta = c.prev > 0 ? (c.cur - c.prev) / c.prev * 100 : null;
+    const badge = delta === null ? "" :
+      `<span class="delta ${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%</span>`;
+    return `<div class="an-stat">
+      <div class="label">${c.label}</div>
+      <div><span class="num">${c.fmt(c.cur)}</span>${badge}</div>
+      <div class="vs">vs ${c.fmt(c.prev)} same period last year</div>
+    </div>`;
+  }).join("");
+
+  const years = d.yearly.map(r => r.year);
+  makeChart("chart-units",   "bar", years, d.yearly.map(r => r.units));
+  makeChart("chart-permits", "bar", years, d.yearly.map(r => r.permits));
+  makeChart("chart-value",   "bar", years, d.yearly.map(r => r.value), { money: true });
+
+  const hasReview = d.review && d.review.length;
+  document.getElementById("card-review").style.display = hasReview ? "" : "none";
+  if (hasReview) makeChart("chart-review", "line", d.review.map(r => r.year), d.review.map(r => r.days), { color: "#a78bfa" });
+
+  makeChart("chart-monthly", "line", d.monthly.map(r => r.label), d.monthly.map(r => r.permits), { fill: true });
+}
+
+async function loadAnalytics() {
+  if (!window.Chart) {
+    document.getElementById("an-stats").innerHTML =
+      `<div class="an-stat"><div class="label">Charts unavailable</div><div class="vs">Chart.js failed to load — check your connection and refresh.</div></div>`;
+    return;
+  }
+  const key = `${currentCity}:${analyticsScope}`;
+  if (!analyticsCache.has(key)) {
+    document.getElementById("an-stats").innerHTML =
+      `<div class="an-stat"><div class="label">Loading…</div><div class="vs">Aggregating citywide permit data</div></div>`;
+    analyticsCache.set(key, currentCity === "bellevue"
+      ? fetchBellevueAnalytics(analyticsScope)
+      : fetchSeattleAnalytics(analyticsScope));
+  }
+  try {
+    renderAnalytics(await analyticsCache.get(key));
+  } catch (err) {
+    analyticsCache.delete(key);
+    document.getElementById("an-stats").innerHTML =
+      `<div class="an-stat"><div class="label">Could not load analytics</div><div class="vs">${esc(err.message)}</div></div>`;
+  }
+}
+
+function setScope(large) {
+  analyticsScope = large;
+  document.getElementById("scope-all").classList.toggle("active", !large);
+  document.getElementById("scope-large").classList.toggle("active", large);
+  loadAnalytics();
+}
+document.getElementById("scope-all").addEventListener("click", () => setScope(false));
+document.getElementById("scope-large").addEventListener("click", () => setScope(true));
+
 // ── View toggle ───────────────────────────────────────────────────────────────
 function setView(v) {
   currentView = v;
-  document.getElementById("map-view").style.display  = v === "map"  ? "block" : "none";
-  document.getElementById("grid-view").style.display = v === "grid" ? "grid"  : "none";
-  document.getElementById("btn-grid").classList.toggle("active", v === "grid");
-  document.getElementById("btn-map").classList.toggle("active",  v === "map");
+  document.getElementById("map-view").style.display       = v === "map"       ? "block" : "none";
+  document.getElementById("grid-view").style.display      = v === "grid"      ? "grid"  : "none";
+  document.getElementById("analytics-view").style.display = v === "analytics" ? "block" : "none";
+  document.getElementById("btn-grid").classList.toggle("active",      v === "grid");
+  document.getElementById("btn-map").classList.toggle("active",       v === "map");
+  document.getElementById("btn-analytics").classList.toggle("active", v === "analytics");
   if (v === "map") {
     const filtered = getFilteredList();
     renderMap(filtered);
     setTimeout(() => map && map.invalidateSize(), 100);
   }
+  if (v === "analytics") loadAnalytics();
 }
 
 function getFilteredList() {
@@ -1422,6 +1757,7 @@ document.getElementById("filter-city").addEventListener("change", async function
     document.getElementById("grid-view").innerHTML =
       `<div class="state-msg"><div class="icon">⚠️</div><h3>Could not load ${cityLabel} permits</h3><p>${esc(err.message)}</p></div>`;
   }
+  if (currentView === "analytics") loadAnalytics();
 });
 
 // ── Event listeners ───────────────────────────────────────────────────────────
