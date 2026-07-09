@@ -17,7 +17,7 @@ jobs:
       - name: Fetch and embed SIP index
         run: bash refresh-sip-index.sh
 
-      - name: Fetch and embed Zillow market data
+      - name: Fetch and embed market data (Zillow + FRED)
         run: bash refresh-market-data.sh
 
       - name: Commit if changed
