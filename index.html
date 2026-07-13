@@ -837,8 +837,26 @@ async function fetchPermits() {
   return res.json();
 }
 
+// The Bellevue layer silently caps every response at 2,000 rows (maxRecordCount), so any
+// query that can match more must paginate with resultOffset until exceededTransferLimit clears.
+async function arcFetchAll(params, maxPages = 5) {
+  const features = [];
+  for (let page = 0; page < maxPages; page++) {
+    const p = new URLSearchParams(params);
+    p.set("resultOffset", String(features.length));
+    const res = await fetch(`${BELLEVUE_API}?${p}`);
+    if (!res.ok) throw new Error(`Bellevue API HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || "Bellevue query failed");
+    const batch = data.features || [];
+    features.push(...batch);
+    if (!data.exceededTransferLimit || batch.length === 0) break;
+  }
+  return features;
+}
+
 async function fetchBellevuePermits() {
-  const params = new URLSearchParams({
+  const features = await arcFetchAll({
     where: "VALUATION >= 1000000 OR PERMITTYPE IN ('BB','BM','BA','LD')",
     outFields: "PERMITNUMBER,PERMITTYPE,PERMITTYPEDESCRIPTION,SITEADDRESS,PERMITSTATUS,PROJECTDESCRIPTION,APPLIEDDATE,ISSUEDDATE,FINALEDDATE,VALUATION,DWELLINGUNITSCREATED,MBPSTATUSSITE,SUBAREA",
     outSR: "4326",
@@ -847,26 +865,24 @@ async function fetchBellevuePermits() {
     resultRecordCount: "2000",
     f: "json"
   });
-  const res = await fetch(`${BELLEVUE_API}?${params}`);
-  if (!res.ok) throw new Error(`Bellevue API HTTP ${res.status}`);
-  const data = await res.json();
-  return (data.features || []).map(normalizeBellevue);
+  return features.map(normalizeBellevue);
 }
 
 async function fetchBellevueSiteHistory(subarea) {
-  const params = new URLSearchParams({
-    where: `SUBAREA = '${subarea}'`,
-    outFields: "PERMITNUMBER,SITEADDRESS,APPLIEDDATE,ISSUEDDATE,PERMITTYPE,PERMITTYPEDESCRIPTION,PERMITSTATUS,VALUATION",
-    outSR: "4326",
-    returnGeometry: "false",
-    orderByFields: "ISSUEDDATE DESC",
-    resultRecordCount: "4000",
-    f: "json"
-  });
-  const res = await fetch(`${BELLEVUE_API}?${params}`);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return (data.features || []).map(f => normalizeBellevue({ attributes: f.attributes, geometry: {} }));
+  try {
+    const features = await arcFetchAll({
+      where: `SUBAREA = '${subarea}'`,
+      outFields: "PERMITNUMBER,SITEADDRESS,APPLIEDDATE,ISSUEDDATE,PERMITTYPE,PERMITTYPEDESCRIPTION,PERMITSTATUS,VALUATION",
+      outSR: "4326",
+      returnGeometry: "false",
+      orderByFields: "ISSUEDDATE DESC",
+      resultRecordCount: "2000",
+      f: "json"
+    }, 3);
+    return features.map(f => normalizeBellevue({ attributes: f.attributes, geometry: {} }));
+  } catch {
+    return [];
+  }
 }
 
 function normalizeBellevue(feature) {
