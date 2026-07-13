@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
 
     steps:
       - uses: actions/checkout@v4
@@ -29,3 +30,14 @@ jobs:
             git commit -m "chore: refresh embedded data $(date +%Y-%m-%d)" &&
             git push
           )
+
+      - name: Open issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Weekly data refresh failed — $(date +%Y-%m-%d)" \
+            --body "The scheduled embedded-data refresh (SIP index / Zillow / FRED) failed. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || true
