@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+  <title>Puget Sound Large Developments — New Filings</title>
+  <link>https://stubberquist.github.io/capitol-hill-developments/whats-new.html</link>
+  <description>Notable development permits (over $5M or 20+ homes) filed in Seattle and Bellevue in the last week</description>
+  <lastBuildDate>Wed, 15 Jul 2026 23:47:06 GMT</lastBuildDate>
+
+  <item>
+    <title>Seattle: $10.0M — 3700 S GENESEE ST</title>
+    <link>https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=7067549-DM</link>
+    <guid isPermaLink="false">7067549-DM</guid>
+    <pubDate>Wed, 08 Jul 2026 08:00:00 GMT</pubDate>
+    <description>Demolish commercial building  per plan</description>
+  </item>
+  <item>
+    <title>Bellevue: $0 · 911 homes — 1000 Bellevue Way NE</title>
+    <link>https://permitsearch.mybuildingpermit.com/PermitDetails/26%20116649%20LJ/BELLEVUE</link>
+    <guid isPermaLink="false">26 116649 LJ</guid>
+    <pubDate>Fri, 10 Jul 2026 08:00:00 GMT</pubDate>
+    <description>Minor modification to MDP 24 112324 LP, for the construction of 4 multifamily buildings in 2 phases., 24 112324 LP</description>
+  </item>
+  <item>
+    <title>Bellevue: $0 · 445 homes — 1101 106th Ave NE</title>
+    <link>https://permitsearch.mybuildingpermit.com/PermitDetails/26%20116749%20LD/BELLEVUE</link>
+    <guid isPermaLink="false">26 116749 LD</guid>
+    <pubDate>Tue, 14 Jul 2026 08:00:00 GMT</pubDate>
+    <description>Construction of 2 mid-rise, multifamily, residential buildings above an underground parking structure.</description>
+  </item>
+</channel>
+</rss>

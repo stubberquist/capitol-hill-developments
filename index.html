@@ -4,8 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Large Developments Viewer</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://www.seattleinprogress.com; font-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://www.seattleinprogress.com; manifest-src 'self'; worker-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#0f1117" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="anonymous" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -22,6 +27,24 @@
       --text: #e2e8f0;
       --muted: #64748b;
       --radius: 10px;
+      --chart-grid: rgba(46, 51, 80, 0.5);
+      --tooltip-bg: #22263a;
+    }
+
+    :root[data-theme="light"] {
+      --bg: #f4f6fb;
+      --surface: #ffffff;
+      --surface2: #eef1f8;
+      --border: #d8deeb;
+      --accent: #4f74e3;
+      --accent2: #8b5cf6;
+      --green: #0f9d6c;
+      --yellow: #b45309;
+      --red: #dc2626;
+      --text: #1e2430;
+      --muted: #5b677a;
+      --chart-grid: rgba(150, 160, 190, 0.35);
+      --tooltip-bg: #2c3247;
     }
 
     body {
@@ -284,7 +307,8 @@
       bottom: 24px;
       right: 10px;
       z-index: 1000;
-      background: rgba(26,29,39,0.92);
+      background: var(--surface);
+      background: color-mix(in srgb, var(--surface) 92%, transparent);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 10px 14px;
@@ -478,6 +502,84 @@
       padding: 16px 0 20px;
       opacity: 0.8;
     }
+    .data-footer a { color: var(--accent); text-decoration: none; }
+
+    /* ── Watchlist / new-since-visit ── */
+    .star-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 16px; line-height: 1; padding: 2px 4px;
+      color: var(--muted); flex-shrink: 0;
+    }
+    .star-btn.starred { color: var(--yellow); }
+    .star-btn:hover { color: var(--yellow); }
+    .chip-new, .chip-changed {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+      padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+    }
+    .chip-new     { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+    .chip-changed { background: rgba(251, 191, 36, 0.15); color: var(--yellow); }
+    #btn-watched.active { background: var(--yellow); color: #1a1d27; border-color: var(--yellow); }
+    .visit-banner {
+      font-size: 12px; color: var(--muted);
+      padding: 8px 12px; margin-bottom: 14px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      grid-column: 1 / -1;
+    }
+    .visit-banner b { color: var(--green); }
+
+    /* ── Project detail modal ── */
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 2000;
+      background: rgba(8, 10, 16, 0.72);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 6vh 16px 16px; overflow-y: auto;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      max-width: 640px; width: 100%; padding: 22px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.5);
+    }
+    .modal .modal-close {
+      float: right; background: var(--surface2); border: 1px solid var(--border);
+      color: var(--muted); border-radius: 6px; cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 6px 9px;
+    }
+    .modal h2 { font-size: 18px; margin: 0 0 4px; }
+    .modal .modal-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+    .modal .modal-desc { font-size: 13px; line-height: 1.5; margin: 12px 0; color: var(--text); }
+    .modal .card-meta { margin: 12px 0; }
+    .timeline { display: flex; align-items: flex-start; margin: 18px 0 6px; }
+    .timeline .t-step { flex: 1; text-align: center; position: relative; }
+    .timeline .t-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--border); margin: 0 auto 6px; position: relative; z-index: 1;
+    }
+    .timeline .t-step.done .t-dot { background: var(--green); }
+    .timeline .t-step::before {
+      content: ""; position: absolute; top: 5px; left: -50%; right: 50%;
+      height: 2px; background: var(--border);
+    }
+    .timeline .t-step:first-child::before { display: none; }
+    .timeline .t-step.done::before { background: var(--green); }
+    .timeline .t-label { font-size: 11px; color: var(--muted); }
+    .timeline .t-date  { font-size: 11px; color: var(--text); margin-top: 2px; }
+    .related-permits { margin-top: 16px; }
+    .related-permits h4 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .related-permits .rp-row {
+      display: flex; justify-content: space-between; gap: 10px;
+      font-size: 12px; padding: 6px 0; border-top: 1px solid var(--border);
+    }
+    .related-permits .rp-row span:last-child { color: var(--muted); white-space: nowrap; }
+
+    /* ── Theme toggle ── */
+    #btn-theme { min-width: 38px; }
+
+    /* ── Marker cluster theming ── */
+    .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background-color: rgba(108, 142, 245, 0.25); }
+    .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+      background-color: rgba(108, 142, 245, 0.85); color: #fff; font-weight: 600;
+    }
 
     /* ── Map: Recent Updates control ── */
     #map-recent-ctrl {
@@ -485,7 +587,8 @@
       top: 10px;
       right: 10px;
       z-index: 1000;
-      background: rgba(26,29,39,0.92);
+      background: var(--surface);
+      background: color-mix(in srgb, var(--surface) 92%, transparent);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 10px 14px;
@@ -603,7 +706,7 @@
     .an-src { font-size: 10px; color: var(--muted); margin-top: 8px; text-align: right; }
     .an-desc { font-size: 11px; color: var(--muted); line-height: 1.45; margin: -8px 0 12px; }
     .an-stat .desc { font-size: 11px; color: var(--muted); line-height: 1.45; margin-top: 6px; opacity: 0.85; }
-    .an-stat .warn { font-size: 11px; color: #fbbf24; line-height: 1.45; margin-top: 6px; }
+    .an-stat .warn { font-size: 11px; color: var(--yellow); line-height: 1.45; margin-top: 6px; }
 
     /* ── Leaflet popup dark theme ── */
     .leaflet-popup-content-wrapper {
@@ -697,9 +800,11 @@
   <input type="text" id="search" placeholder="Search address or description…" aria-label="Search address or description" style="min-width:200px" />
 
   <div class="view-toggle">
+    <button id="btn-watched" onclick="toggleWatchedFilter()" title="Show only starred projects">★ Watched</button>
     <button id="btn-grid" class="active" onclick="setView('grid')">⊞ Cards</button>
     <button id="btn-map" onclick="setView('map')">⊕ Map</button>
     <button id="btn-analytics" onclick="setView('analytics')">∿ Analytics</button>
+    <button id="btn-theme" onclick="toggleTheme()" title="Switch light/dark theme">◐</button>
   </div>
 </div>
 
@@ -740,7 +845,12 @@
   <footer class="data-footer" id="data-footer"></footer>
 </main>
 
+<div class="modal-backdrop" id="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal" id="modal-body"></div>
+</div>
+
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" integrity="sha256-Hk4dIpcqOSb0hZjgyvFOP+cEmDXUKKNE/tT542ZbNQg=" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js" integrity="sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=" crossorigin="anonymous"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -819,10 +929,88 @@ const MARKET_DATA = {"months":["2016-06","2016-07","2016-08","2016-09","2016-10"
 let allPermits = [];
 let map = null;
 let markers = [];
+let clusterGroup = null;
+let tileLayer = null;
 let currentView = "grid";
 let currentCity = "seattle";
 let recentMode  = false;
 let recentCount = 20;
+
+// ── Watchlist & visit tracking (localStorage) ─────────────────────────────────
+function loadJSON(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+function saveJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private browsing */ }
+}
+
+let watchedOnly = false;
+const watchlist = new Set(loadJSON("chd-watchlist", []));
+const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); } catch { return null; } })();
+const watchStatusPrev = loadJSON("chd-watch-status", {});
+let watchChanges = {};  // permitnum → previous status key, computed once per data load
+
+function toggleWatch(pn) {
+  if (watchlist.has(pn)) watchlist.delete(pn); else watchlist.add(pn);
+  saveJSON("chd-watchlist", [...watchlist]);
+  snapshotWatchStatuses();
+  applyFilters();
+}
+
+function toggleWatchedFilter() {
+  watchedOnly = !watchedOnly;
+  document.getElementById("btn-watched").classList.toggle("active", watchedOnly);
+  applyFilters();
+}
+
+// ISO strings compare lexically, so string > string works for "is after"
+function isNewSinceVisit(p) {
+  if (!lastVisit) return false;
+  return (p.applieddate && p.applieddate > lastVisit) ||
+         (p.issueddate  && p.issueddate  > lastVisit);
+}
+
+function snapshotWatchStatuses() {
+  const snap = { ...watchStatusPrev };
+  allPermits.forEach(p => { if (p.permitnum && watchlist.has(p.permitnum)) snap[p.permitnum] = getStatus(p); });
+  saveJSON("chd-watch-status", snap);
+}
+
+// Diff watched permits against the last visit's statuses, then take a fresh snapshot
+function computeWatchChanges() {
+  watchChanges = {};
+  allPermits.forEach(p => {
+    const prev = watchStatusPrev[p.permitnum];
+    if (watchlist.has(p.permitnum) && prev && prev !== getStatus(p)) watchChanges[p.permitnum] = prev;
+  });
+  snapshotWatchStatuses();
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+let currentTheme = loadStoredState().theme ||
+  (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme === "light" ? "light" : "";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", theme === "light" ? "#f4f6fb" : "#0f1117");
+  if (tileLayer) {
+    tileLayer.setUrl(`https://{s}.basemaps.cartocdn.com/${theme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`);
+  }
+  if (window.Chart) {
+    const cs = getComputedStyle(document.documentElement);
+    Chart.defaults.color = cs.getPropertyValue("--muted").trim();
+    Chart.defaults.borderColor = cs.getPropertyValue("--chart-grid").trim();
+  }
+}
+
+function toggleTheme() {
+  currentTheme = currentTheme === "light" ? "dark" : "light";
+  applyTheme(currentTheme);
+  syncState();
+  if (currentView === "analytics") loadAnalytics();  // recreate charts with new colors
+}
+applyTheme(currentTheme);
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
 async function fetchPermits() {
@@ -898,6 +1086,7 @@ function normalizeBellevue(feature) {
     description: a.PROJECTDESCRIPTION,
     applieddate: a.APPLIEDDATE ? new Date(a.APPLIEDDATE).toISOString() : null,
     issueddate: a.ISSUEDDATE ? new Date(a.ISSUEDDATE).toISOString() : null,
+    finaleddate: a.FINALEDDATE ? new Date(a.FINALEDDATE).toISOString() : null,
     estprojectcost: a.VALUATION,
     housingunitsadded: a.DWELLINGUNITSCREATED,
     latitude: g.y != null ? String(g.y) : null,
@@ -1151,8 +1340,13 @@ function renderGrid(permits) {
     return;
   }
 
+  const newCount = lastVisit ? permits.filter(isNewSinceVisit).length : 0;
+  const banner = newCount
+    ? `<div class="visit-banner"><b>${newCount.toLocaleString()}</b> permit${newCount === 1 ? "" : "s"} filed or issued since your last visit (${fmtDate(lastVisit)}) — look for the NEW chip.</div>`
+    : "";
+
   const shown = permits.slice(0, gridLimit);
-  grid.innerHTML = shown.map(p => {
+  grid.innerHTML = banner + shown.map(p => {
     const status     = getStatus(p);
     const use        = getBuildingUse(p);
     const value      = fmtValue(p.estprojectcost);
@@ -1196,10 +1390,16 @@ function renderGrid(permits) {
     const mhaKey  = p._city === "bellevue" ? null : getMHAStatus(p, site);
     const mha     = mhaKey ? MHA[mhaKey] : null;
 
-    return `<div class="card">
+    const changedFrom = watchChanges[rawNum];
+    return `<div class="card" data-pn="${num}">
       <div class="card-header">
         <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
-        <span class="badge ${status}">${statusLabel(status)}</span>
+        <span style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          ${isNewSinceVisit(p) ? `<span class="chip-new" title="Filed or issued since your last visit">NEW</span>` : ""}
+          ${changedFrom ? `<span class="chip-changed" title="Was ${statusLabel(changedFrom)} on your last visit">CHANGED</span>` : ""}
+          <button class="star-btn${watchlist.has(rawNum) ? " starred" : ""}" data-pn="${num}" title="${watchlist.has(rawNum) ? "Stop watching" : "Watch this project"}">${watchlist.has(rawNum) ? "★" : "☆"}</button>
+          <span class="badge ${status}">${statusLabel(status)}</span>
+        </span>
       </div>
       <div class="card-address">${addr}</div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:-4px">
@@ -1264,6 +1464,117 @@ function renderGrid(permits) {
   });
 }
 
+// ── Project detail modal ──────────────────────────────────────────────────────
+function timelineHTML(p) {
+  const steps = [
+    { label: "Applied",   date: p.applieddate },
+    { label: "Issued",    date: p.issueddate },
+    { label: "Completed", date: p.finaleddate },
+  ];
+  return `<div class="timeline">` + steps.map(s =>
+    `<div class="t-step${s.date ? " done" : ""}">
+      <div class="t-dot"></div>
+      <div class="t-label">${s.label}</div>
+      <div class="t-date">${s.date ? fmtDate(s.date) : "—"}</div>
+    </div>`).join("") + `</div>`;
+}
+
+function openModal(pn) {
+  const p = allPermits.find(x => (x.permitnum || "") === pn);
+  if (!p) return;
+  const status    = getStatus(p);
+  const rawNum    = p.permitnum || "—";
+  const rawAddr   = p.originaladdress1 || "Address unknown";
+  const num       = esc(rawNum);
+  const cityStr   = p._city === "bellevue" ? "Bellevue, WA" : "Seattle, WA";
+  const detailUrl = esc(safeUrl(p.link?.url) ||
+    (p._city === "bellevue"
+      ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(rawNum)}/BELLEVUE`
+      : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(rawNum)}`));
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
+  const sipId   = SIP_INDEX[normalizeAddr(p)];
+  const sipUrl  = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
+  const mupUrl  = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
+  const units   = extractUnits(p);
+  const ptLabel = getPermitTypeLabel(p);
+  const hasLoc  = parseFloat(p.latitude) && parseFloat(p.longitude);
+
+  // Related permits: full site history when a neighborhood is loaded, else other loaded permits at this address
+  const myAddr  = normalizeAddr(p);
+  const related = (historyLoaded ? sitePermitsFor(p) : allPermits.filter(x => normalizeAddr(x) === myAddr))
+    .filter(x => (x.permitnum || "") !== rawNum)
+    .slice(0, 8);
+
+  document.getElementById("modal-body").innerHTML = `
+    <button class="modal-close" onclick="closeModal()" aria-label="Close">✕</button>
+    <h2>${esc(rawAddr)}</h2>
+    <div class="modal-sub">
+      <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
+      &nbsp;<span class="badge ${status}">${statusLabel(status)}</span>
+      <button class="star-btn${watchlist.has(rawNum) ? " starred" : ""}" data-pn="${num}">${watchlist.has(rawNum) ? "★" : "☆"}</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
+      <span class="use-tag ${getBuildingUse(p)}">${useLabel(getBuildingUse(p))}</span>
+      ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
+    </div>
+    ${timelineHTML(p)}
+    <div class="modal-desc">${esc(p.description || "No description provided.")}</div>
+    <div class="card-meta">
+      <div class="meta-item"><span class="meta-key">Est. Value</span><span class="meta-val" style="color:var(--accent);font-weight:700">${fmtValue(p.estprojectcost)}</span></div>
+      <div class="meta-item"><span class="meta-key">City</span><span class="meta-val">${cityStr}</span></div>
+      <div class="meta-item"><span class="meta-key">Status</span><span class="meta-val">${esc(p.statuscurrent || "—")}</span></div>
+    </div>
+    ${related.length ? `<div class="related-permits">
+      <h4>${historyLoaded ? "Site history at this address" : "Other loaded permits at this address"}</h4>
+      ${related.map(r => `<div class="rp-row">
+        <span style="font-family:monospace">${esc(r.permitnum || "—")}</span>
+        <span>${esc(getPermitTypeLabel(r).label)}</span>
+        <span>${fmtDate(r.issueddate || r.applieddate)}</span>
+      </div>`).join("")}
+    </div>` : ""}
+    <div class="card-links" style="border-top:1px solid var(--border);padding-top:12px;margin-top:14px">
+      <a class="card-link" href="${detailUrl}" target="_blank" rel="noopener">Permit Portal ↗</a>
+      ${mupUrl ? `<a class="card-link dr" href="${mupUrl}" target="_blank" rel="noopener">Design Review ↗</a>` : ""}
+      ${sipUrl ? `<a class="card-link sip" href="${sipUrl}" target="_blank" rel="noopener">View Renderings ↗</a>` : ""}
+      <a class="card-link maps" href="${mapsUrl}" target="_blank" rel="noopener">Google Maps ↗</a>
+      ${hasLoc ? `<a class="card-link" href="#" id="modal-show-map">Show on Map</a>` : ""}
+    </div>`;
+  document.getElementById("modal-backdrop").classList.add("open");
+
+  const showMap = document.getElementById("modal-show-map");
+  if (showMap) showMap.addEventListener("click", e => {
+    e.preventDefault();
+    closeModal();
+    setView("map");
+    map.setView([parseFloat(p.latitude), parseFloat(p.longitude)], 17);
+  });
+}
+
+function closeModal() {
+  document.getElementById("modal-backdrop").classList.remove("open");
+}
+
+// Card / modal interaction (delegated — cards are re-rendered wholesale)
+document.getElementById("grid-view").addEventListener("click", e => {
+  const star = e.target.closest(".star-btn");
+  if (star) { toggleWatch(star.dataset.pn); return; }
+  if (e.target.closest("a") || e.target.closest("button")) return;
+  const card = e.target.closest(".card[data-pn]");
+  if (card) openModal(card.dataset.pn);
+});
+document.getElementById("modal-backdrop").addEventListener("click", e => {
+  const star = e.target.closest(".star-btn");
+  if (star) {
+    toggleWatch(star.dataset.pn);
+    star.classList.toggle("starred");
+    star.textContent = star.classList.contains("starred") ? "★" : "☆";
+    return;
+  }
+  if (e.target.id === "modal-backdrop") closeModal();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
 // ── Render map ────────────────────────────────────────────────────────────────
 const MAP_COLORS = {
   issued:    "#fbbf24",  // yellow  — in progress / active construction
@@ -1287,7 +1598,7 @@ function renderMap(permits) {
     const initCenter = currentCity === "bellevue" ? [47.610, -122.200] : [47.608, -122.335];
     const initZoom   = currentCity === "bellevue" ? 13 : 12;
     map = L.map("map").setView(initCenter, initZoom);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    tileLayer = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${currentTheme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`, {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19
     }).addTo(map);
@@ -1301,7 +1612,8 @@ function renderMap(permits) {
           <div class="leg-dot" style="background:${MAP_COLORS[item.key]}"></div>
           <span>${item.label}</span>
         </div>`
-      ).join("");
+      ).join("") +
+      `<div class="leg-row" style="margin-top:4px;color:var(--muted)"><span>dot size = homes added</span></div>`;
     document.getElementById("map").appendChild(legend);
   }
 
@@ -1327,6 +1639,14 @@ function renderMap(permits) {
     });
   });
 
+  // Markers live in a cluster group (falls back to plain markers if the plugin failed to load)
+  const useCluster = typeof L.markerClusterGroup === "function";
+  if (clusterGroup) {
+    clusterGroup.clearLayers();
+  } else if (useCluster) {
+    clusterGroup = L.markerClusterGroup({ maxClusterRadius: 46, disableClusteringAtZoom: 16, showCoverageOnHover: false });
+    map.addLayer(clusterGroup);
+  }
   markers.forEach(m => m.remove());
   markers = [];
 
@@ -1366,10 +1686,16 @@ function renderMap(permits) {
     const sipUrl = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
     const mupUrl = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
 
+    // Size encodes scale: unit count when known, else declared value
+    const unitsN = parseFloat(units) || 0;
+    const valueN = parseFloat(p.estprojectcost) || 0;
+    const radius = recentSet ? 9 :
+      Math.max(6, Math.min(17, unitsN ? 5.5 + Math.sqrt(unitsN) * 0.75 : 5.5 + Math.sqrt(valueN / 1e6) * 0.6));
     const circle = L.circleMarker([lat, lon], {
-      radius: recentSet ? 9 : 7, fillColor: MAP_COLORS[status], color: "#fff",
+      radius, fillColor: MAP_COLORS[status], color: "#fff",
       weight: 1.5, opacity: 0.9, fillOpacity: 0.9,
-    }).addTo(map);
+    });
+    if (clusterGroup) clusterGroup.addLayer(circle); else circle.addTo(map);
 
     // Popup reuses the card CSS classes — same look as grid view, kept in sync automatically
     circle.bindPopup(`
@@ -1410,9 +1736,8 @@ const analyticsCache = new Map();    // `${city}:${scope}` → Promise<data>
 const anCharts = {};                 // canvas id → Chart instance
 
 if (window.Chart) {
-  Chart.defaults.color = "#64748b";
-  Chart.defaults.borderColor = "rgba(46,51,80,0.5)";
   Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  applyTheme(currentTheme);  // sets Chart.defaults.color/borderColor from the active palette
 }
 
 function isoDate(d) {
@@ -1869,7 +2194,7 @@ document.getElementById("scope-large").addEventListener("click", () => setScope(
 // URL wins over stored state; only non-defaults go in the URL so links stay clean.
 function syncState() {
   try {
-    localStorage.setItem("chd-state", JSON.stringify({ city: currentCity, view: currentView, scope: analyticsScope }));
+    localStorage.setItem("chd-state", JSON.stringify({ city: currentCity, view: currentView, scope: analyticsScope, theme: currentTheme }));
   } catch { /* private browsing */ }
   try {
     const p = new URLSearchParams(window.location.search);
@@ -1901,7 +2226,10 @@ function renderDataFooter() {
       parts.push("Market data (Zillow/FRED): through " +
         new Date(my, mm - 1, 1).toLocaleDateString("en-US", { month: "short", year: "numeric" }));
     }
-    document.getElementById("data-footer").textContent = parts.join("  ·  ");
+    // Static strings only — no API data flows into this innerHTML
+    document.getElementById("data-footer").innerHTML =
+      parts.map(esc).join("  ·  ") +
+      `  ·  <a href="whats-new.html">What's new this week</a>  ·  <a href="feed.xml">RSS</a>`;
   } catch { /* cosmetic — never block init */ }
 }
 
@@ -1930,6 +2258,7 @@ function getFilteredList() {
   const minValF = parseFloat(document.getElementById("filter-minval").value) || MIN_VALUE;
   const searchF = document.getElementById("search").value.toLowerCase();
   return allPermits.filter(p => {
+    if (watchedOnly && !watchlist.has(p.permitnum)) return false;
     if (!neighborhoodMatch(p, nbF)) return false;
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
@@ -2016,7 +2345,9 @@ async function init() {
   if (view && view !== "grid") setView(view);
   try {
     allPermits = currentCity === "bellevue" ? await fetchBellevuePermits() : await fetchPermits();
+    computeWatchChanges();
     applyFilters();
+    try { localStorage.setItem("chd-last-visit", new Date().toISOString()); } catch {}
     const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
     document.getElementById("last-updated").textContent =
       `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
@@ -2077,10 +2408,11 @@ document.getElementById("filter-city").addEventListener("change", async function
       : "Seattle, WA · Multifamily & Office · $1M+ projects · Live SDCI data";
 
   // Reset map so it re-initializes at the right city center next render
-  if (map) { map.remove(); map = null; markers = []; }
+  if (map) { map.remove(); map = null; markers = []; clusterGroup = null; tileLayer = null; }
 
   try {
     allPermits = currentCity === "bellevue" ? await fetchBellevuePermits() : await fetchPermits();
+    computeWatchChanges();
     applyFilters();
     document.getElementById("last-updated").textContent =
       `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
@@ -2101,6 +2433,11 @@ document.getElementById("search").addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(applyFilters, 150);
 });
+
+// Installable PWA shell — service workers need http(s), so skip on local file:// preview
+if (location.protocol.startsWith("http") && "serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
 
 init();
 </script>
