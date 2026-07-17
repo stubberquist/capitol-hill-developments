@@ -575,10 +575,23 @@
     /* ── Theme toggle ── */
     #btn-theme { min-width: 38px; }
 
-    /* ── Marker cluster theming ── */
-    .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background-color: rgba(108, 142, 245, 0.25); }
-    .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
-      background-color: rgba(108, 142, 245, 0.85); color: #fff; font-weight: 600;
+    /* ── Map pins & clusters (both L.Marker/divIcon — same pane, so stacking/spiderfy z-order works) ── */
+    .chd-pin { background: none; border: none; }
+    .chd-pin span {
+      display: block; width: 100%; height: 100%; border-radius: 50%;
+      border: 1.5px solid #fff; opacity: 0.92; cursor: pointer;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+    }
+    .chd-cluster { background: none; border: none; }
+    .chd-cluster .cc-ring {
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    }
+    .chd-cluster .cc-core {
+      width: 68%; height: 68%; border-radius: 50%;
+      background: var(--surface); color: var(--text);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; line-height: 1;
     }
 
     /* ── Map: Recent Updates control ── */
@@ -1593,6 +1606,51 @@ const MAP_LEGEND_ITEMS = [
   { key: "cancelled", label: "Cancelled" },
 ];
 
+// Compact number for cluster labels: 2400 → "2.4k"
+function fmtCompact(n) {
+  if (n >= 10000) return Math.round(n / 1000) + "k";
+  if (n >= 1000)  return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(Math.round(n));
+}
+
+// Cluster bubbles: ring is a conic-gradient of the child permits' status mix, center label is
+// total homes added (falls back to permit count when nothing in the cluster adds units).
+const STATUS_ORDER = ["issued", "complete", "review", "pending", "cancelled", "other"];
+function clusterRing(counts, total) {
+  let acc = 0;
+  const stops = [];
+  for (const key of STATUS_ORDER) {
+    const n = counts[key];
+    if (!n) continue;
+    const from = (acc / total) * 360;
+    acc += n;
+    stops.push(`${MAP_COLORS[key]} ${from.toFixed(1)}deg ${(acc / total * 360).toFixed(1)}deg`);
+  }
+  return stops.length ? `conic-gradient(${stops.join(",")})` : MAP_COLORS.other;
+}
+
+function clusterIconCreate(cluster) {
+  const children = cluster.getAllChildMarkers();
+  const counts = {};
+  let units = 0, hasUnits = false;
+  children.forEach(m => {
+    const meta = m._permitMeta || {};
+    if (meta.units) { units += meta.units; hasUnits = true; }
+    counts[meta.status || "other"] = (counts[meta.status || "other"] || 0) + 1;
+  });
+  const count = children.length;
+  const label = hasUnits ? fmtCompact(units) : String(count);
+  const size  = Math.round(Math.max(34, Math.min(60, 30 + Math.sqrt(count) * 3.4)));
+  return L.divIcon({
+    className: "chd-cluster",
+    html: `<div class="cc-ring" style="width:${size}px;height:${size}px;background:${clusterRing(counts, count)}">
+             <div class="cc-core">${esc(label)}</div>
+           </div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
 function renderMap(permits) {
   if (!map) {
     const initCenter = currentCity === "bellevue" ? [47.610, -122.200] : [47.608, -122.335];
@@ -1613,7 +1671,7 @@ function renderMap(permits) {
           <span>${item.label}</span>
         </div>`
       ).join("") +
-      `<div class="leg-row" style="margin-top:4px;color:var(--muted)"><span>dot size = homes added</span></div>`;
+      `<div class="leg-row" style="margin-top:4px;color:var(--muted)"><span>dot size = homes added · cluster ring = status mix, center = homes added</span></div>`;
     document.getElementById("map").appendChild(legend);
   }
 
@@ -1644,7 +1702,20 @@ function renderMap(permits) {
   if (clusterGroup) {
     clusterGroup.clearLayers();
   } else if (useCluster) {
-    clusterGroup = L.markerClusterGroup({ maxClusterRadius: 46, disableClusteringAtZoom: 16, showCoverageOnHover: false });
+    clusterGroup = L.markerClusterGroup({
+      maxClusterRadius: 46, disableClusteringAtZoom: 16, showCoverageOnHover: false,
+      iconCreateFunction: clusterIconCreate,
+      spiderfyShapePositions: (count, center) => {
+        // Wider spiderfy spacing than the plugin default so legs don't overlap our larger pins
+        const dist = count < 8 ? 42 : 30 + count * 1.6;
+        const positions = [];
+        for (let i = 0; i < count; i++) {
+          const angle = (i * (2 * Math.PI)) / count;
+          positions.push(L.point(center.x + dist * Math.cos(angle), center.y + dist * Math.sin(angle)));
+        }
+        return positions;
+      },
+    });
     map.addLayer(clusterGroup);
   }
   markers.forEach(m => m.remove());
@@ -1691,10 +1762,18 @@ function renderMap(permits) {
     const valueN = parseFloat(p.estprojectcost) || 0;
     const radius = recentSet ? 9 :
       Math.max(6, Math.min(17, unitsN ? 5.5 + Math.sqrt(unitsN) * 0.75 : 5.5 + Math.sqrt(valueN / 1e6) * 0.6));
-    const circle = L.circleMarker([lat, lon], {
-      radius, fillColor: MAP_COLORS[status], color: "#fff",
-      weight: 1.5, opacity: 0.9, fillOpacity: 0.9,
+    const diameter = radius * 2;
+    // A real L.Marker (not circleMarker/SVG) — shares markerPane with cluster bubbles, so
+    // z-order and spiderfy-to-front both work; circleMarker's overlayPane always sits underneath.
+    const circle = L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: "chd-pin",
+        html: `<span style="width:${diameter}px;height:${diameter}px;background:${MAP_COLORS[status]}"></span>`,
+        iconSize: [diameter, diameter],
+        iconAnchor: [diameter / 2, diameter / 2],
+      }),
     });
+    circle._permitMeta = { units: unitsN, status };
     if (clusterGroup) clusterGroup.addLayer(circle); else circle.addTo(map);
 
     // Popup reuses the card CSS classes — same look as grid view, kept in sync automatically
