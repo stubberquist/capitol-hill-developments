@@ -790,6 +790,18 @@
   </div>
 
   <div class="filter-group">
+    <label for="filter-type">Permit Type</label>
+    <select id="filter-type">
+      <option value="">All</option>
+      <option value="new-construction">New Construction</option>
+      <option value="demolition">Demolition</option>
+      <option value="alteration">Alteration</option>
+      <option value="land-use">Land Use / Design Review</option>
+      <option value="other">Other</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
     <label for="filter-minval">Min Value</label>
     <select id="filter-minval">
       <option value="1000000">$1M+</option>
@@ -2334,6 +2346,7 @@ function getFilteredList() {
   const nbF     = document.getElementById("filter-neighborhood").value;
   const statusF = document.getElementById("filter-status").value;
   const useF    = document.getElementById("filter-use").value;
+  const typeF   = document.getElementById("filter-type").value;
   const minValF = parseFloat(document.getElementById("filter-minval").value) || MIN_VALUE;
   const searchF = document.getElementById("search").value.toLowerCase();
   return allPermits.filter(p => {
@@ -2344,6 +2357,7 @@ function getFilteredList() {
     if (cost < minValF && !(p._city === "bellevue" && !p.estprojectcost)) return false;
     if (statusF && getStatus(p) !== statusF) return false;
     if (useF && getBuildingUse(p) !== useF) return false;
+    if (typeF && (getPermitTypeLabel(p).cls || "other") !== typeF) return false;
     if (searchF) {
       const hay = [(p.originaladdress1||""), (p.description||""), (p.permitnum||"")].join(" ").toLowerCase();
       if (!hay.includes(searchF)) return false;
@@ -2504,7 +2518,7 @@ document.getElementById("filter-city").addEventListener("change", async function
 });
 
 // ── Event listeners ───────────────────────────────────────────────────────────
-["filter-status","filter-use","filter-minval","sort-by"].forEach(id =>
+["filter-status","filter-use","filter-type","filter-minval","sort-by"].forEach(id =>
   document.getElementById(id).addEventListener("change", applyFilters));
 
 let searchTimer;
