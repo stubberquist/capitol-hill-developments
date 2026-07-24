@@ -138,7 +138,7 @@
         align-items: flex-start;
         gap: 3px;
       }
-      .filter-group select { width: 100%; }
+      .filter-group select, .filter-group .ms-trigger { width: 100%; }
       #search {
         grid-column: 1 / -1;
         min-width: unset !important;
@@ -168,6 +168,63 @@
     select:focus, input[type="text"]:focus {
       border-color: var(--accent);
     }
+
+    /* ── Multi-select checkbox dropdown (Status, Building Use) ── */
+    .ms-group { position: relative; }
+
+    .ms-trigger {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .ms-trigger .ms-caret { color: var(--muted); font-size: 10px; }
+    .ms-trigger:hover { border-color: var(--accent); }
+    .ms-trigger.active { border-color: var(--accent); color: var(--accent); }
+
+    .ms-panel {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 100;
+      min-width: 180px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .ms-panel[hidden] {
+      display: none;
+    }
+
+    .ms-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: normal;
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .ms-option:hover { background: var(--surface2); }
+    .ms-option input { accent-color: var(--accent); cursor: pointer; }
 
     .btn {
       background: var(--accent);
@@ -219,7 +276,7 @@
 
     /* ── Map ── */
     #map-view { display: none; }
-    #map { height: 600px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
+    #map { position: relative; z-index: 0; height: 600px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
 
     /* ── Grid ── */
     #grid-view {
@@ -766,27 +823,27 @@
     </select>
   </div>
 
-  <div class="filter-group">
-    <label for="filter-status">Status</label>
-    <select id="filter-status">
-      <option value="">All</option>
-      <option value="issued">In Progress</option>
-      <option value="complete">Completed</option>
-      <option value="review">In Review</option>
-      <option value="pending">Pending / Applied</option>
-      <option value="cancelled">Cancelled</option>
-    </select>
+  <div class="filter-group ms-group" id="ms-status">
+    <label>Status</label>
+    <button type="button" class="ms-trigger"><span class="ms-text">All</span> <span class="ms-caret">▾</span></button>
+    <div class="ms-panel" hidden>
+      <label class="ms-option"><input type="checkbox" value="issued"> In Progress</label>
+      <label class="ms-option"><input type="checkbox" value="complete"> Completed</label>
+      <label class="ms-option"><input type="checkbox" value="review"> In Review</label>
+      <label class="ms-option"><input type="checkbox" value="pending"> Pending / Applied</label>
+      <label class="ms-option"><input type="checkbox" value="cancelled"> Cancelled</label>
+    </div>
   </div>
 
-  <div class="filter-group">
-    <label for="filter-use">Building Use</label>
-    <select id="filter-use">
-      <option value="">All</option>
-      <option value="multifamily">Multifamily / Residential</option>
-      <option value="office">Office</option>
-      <option value="mixed-use">Mixed-Use</option>
-      <option value="commercial">Commercial</option>
-    </select>
+  <div class="filter-group ms-group" id="ms-use">
+    <label>Building Use</label>
+    <button type="button" class="ms-trigger"><span class="ms-text">All</span> <span class="ms-caret">▾</span></button>
+    <div class="ms-panel" hidden>
+      <label class="ms-option"><input type="checkbox" value="multifamily"> Multifamily / Residential</label>
+      <label class="ms-option"><input type="checkbox" value="office"> Office</label>
+      <label class="ms-option"><input type="checkbox" value="mixed-use"> Mixed-Use</label>
+      <label class="ms-option"><input type="checkbox" value="commercial"> Commercial</label>
+    </div>
   </div>
 
   <div class="filter-group">
@@ -1289,7 +1346,7 @@ function fmtDate(d) {
 function lastActivityDate(p) {
   const candidates = [
     p.issueddate, p.readytoissuedate, p.planreviewcompletedate,
-    p.initialreviewcompletedate, p.applieddate, p.finaleddate,
+    p.initialreviewcompletedate, p.applieddate, p.finaleddate, p.completeddate,
   ].filter(Boolean);
   return candidates.length
     ? new Date(Math.max(...candidates.map(d => new Date(d))))
@@ -1508,7 +1565,7 @@ function timelineHTML(p) {
   const steps = [
     { label: "Applied",   date: p.applieddate },
     { label: "Issued",    date: p.issueddate },
-    { label: "Completed", date: p.finaleddate },
+    { label: "Completed", date: p.finaleddate || p.completeddate },
   ];
   return `<div class="timeline">` + steps.map(s =>
     `<div class="t-step${s.date ? " done" : ""}">
@@ -2356,10 +2413,44 @@ function setView(v) {
   syncState();
 }
 
+// ── Multi-select filter dropdowns (Status, Building Use) ──────────────────────
+const multiSelects = {};   // groupId -> { get(): string[], close() }
+const msCloseFns = [];
+
+function initMultiSelect(groupId, allLabel) {
+  const group = document.getElementById(groupId);
+  const trigger = group.querySelector(".ms-trigger");
+  const text = trigger.querySelector(".ms-text");
+  const panel = group.querySelector(".ms-panel");
+  const checks = [...panel.querySelectorAll("input[type=checkbox]")];
+
+  function selected() { return checks.filter(c => c.checked).map(c => c.value); }
+  function updateLabel() {
+    const n = selected().length;
+    text.textContent = n === 0 ? allLabel : n === 1
+      ? checks.find(c => c.checked).closest(".ms-option").textContent.trim()
+      : `${n} selected`;
+    trigger.classList.toggle("active", n > 0);
+  }
+  function close() { panel.hidden = true; }
+  function open() { msCloseFns.forEach(fn => fn()); panel.hidden = false; }
+
+  trigger.addEventListener("click", e => { e.stopPropagation(); panel.hidden ? open() : close(); });
+  checks.forEach(c => c.addEventListener("change", () => { updateLabel(); applyFilters(); }));
+  document.addEventListener("click", e => { if (!group.contains(e.target)) close(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
+
+  updateLabel();
+  msCloseFns.push(close);
+  multiSelects[groupId] = { get: selected, close };
+}
+initMultiSelect("ms-status", "All");
+initMultiSelect("ms-use", "All");
+
 function getFilteredList() {
   const nbF     = document.getElementById("filter-neighborhood").value;
-  const statusF = document.getElementById("filter-status").value;
-  const useF    = document.getElementById("filter-use").value;
+  const statusF = multiSelects["ms-status"].get();
+  const useF    = multiSelects["ms-use"].get();
   const typeF   = document.getElementById("filter-type").value;
   const minValF = parseFloat(document.getElementById("filter-minval").value) || MIN_VALUE;
   const searchF = document.getElementById("search").value.toLowerCase();
@@ -2369,8 +2460,8 @@ function getFilteredList() {
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
     if (cost < minValF && !(p._city === "bellevue" && !p.estprojectcost)) return false;
-    if (statusF && getStatus(p) !== statusF) return false;
-    if (useF && getBuildingUse(p) !== useF) return false;
+    if (statusF.length && !statusF.includes(getStatus(p))) return false;
+    if (useF.length && !useF.includes(getBuildingUse(p))) return false;
     if (typeF && (getPermitTypeLabel(p).cls || "other") !== typeF) return false;
     if (searchF) {
       const hay = [(p.originaladdress1||""), (p.description||""), (p.permitnum||"")].join(" ").toLowerCase();
@@ -2532,7 +2623,7 @@ document.getElementById("filter-city").addEventListener("change", async function
 });
 
 // ── Event listeners ───────────────────────────────────────────────────────────
-["filter-status","filter-use","filter-type","filter-minval","sort-by"].forEach(id =>
+["filter-type","filter-minval","sort-by"].forEach(id =>
   document.getElementById(id).addEventListener("change", applyFilters));
 
 let searchTimer;
