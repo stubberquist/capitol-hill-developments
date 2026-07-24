@@ -372,6 +372,7 @@
     }
     .street-line svg { width: 11px; height: 11px; flex-shrink: 0; }
     .street-line .muted { color: var(--muted); font-weight: 400; }
+    .street-line.upcoming { color: var(--accent2); }
     .badge.pending   { background: rgba(167,139,250,0.15); color: var(--accent2); }
     .badge.cancelled { background: rgba(248,113,113,0.12); color: var(--red); }
     .badge.other     { background: rgba(100,116,139,0.15); color: var(--muted); }
@@ -1302,6 +1303,11 @@ function sitePermitsFor(p) {
 // Address -> { text, endMs } for the currently-active right-of-way permit with the
 // biggest pedestrian/traffic impact at that address (sidewalk closure, staging, etc.)
 let STREET_ACTIVITY = {};
+// Address -> { text, startMs } for the soonest-starting permit whose window hasn't
+// opened yet (scheduled within STREET_UPCOMING_WINDOW_DAYS). Only set when there's
+// no currently-active permit at that address — active always takes priority.
+let STREET_UPCOMING = {};
+const STREET_UPCOMING_WINDOW_DAYS = 90;
 
 const STREET_USE_URL = "https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/SU_Permit_Data_Model_Relationships/FeatureServer/2/query";
 const STREET_USE_FACILITIES = [
@@ -1322,7 +1328,7 @@ function describeStreetImpact(a) {
 
   const useType = (a.USE_TYPE || "").trim();
   const reason = STREET_USE_GENERIC_TYPES.has(useType) ? "" : ` — ${useType}`;
-  return { text: `${facility} ${sev.toLowerCase()}${reason}`, endMs: a.USE_END_DATE };
+  return { text: `${facility} ${sev.toLowerCase()}${reason}`, startMs: a.USE_START_DATE, endMs: a.USE_END_DATE };
 }
 
 function fmtStreetEnds(endMs) {
@@ -1333,17 +1339,32 @@ function fmtStreetEnds(endMs) {
   return `thru ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 }
 
+function fmtStreetBegins(startMs) {
+  if (!startMs) return "";
+  const start = new Date(startMs);
+  const today = new Date();
+  if (start.toDateString() === today.toDateString()) return "starts today";
+  return `starts ${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+}
+
 async function fetchStreetActivity() {
   STREET_ACTIVITY = {};
-  const todayStr = new Date().toISOString().slice(0, 10);
+  STREET_UPCOMING = {};
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const horizon = new Date(today.getTime() + STREET_UPCOMING_WINDOW_DAYS * 86400000);
+  const horizonStr = horizon.toISOString().slice(0, 10);
+  const nowMs = today.getTime();
+  // Window covers both currently-active permits and ones scheduled to start within
+  // the upcoming horizon — bucketed client-side by comparing USE_START_DATE to now.
   const where = `PERMIT_TYPE_ALIAS IN ('Construction and Storage Containers','ROW Construction Permit','Shoring') ` +
-    `AND PERMIT_STATUS='Issued' AND USE_START_DATE <= TIMESTAMP '${todayStr} 23:59:59' AND USE_END_DATE >= TIMESTAMP '${todayStr} 00:00:00'`;
+    `AND PERMIT_STATUS='Issued' AND USE_START_DATE <= TIMESTAMP '${horizonStr} 23:59:59' AND USE_END_DATE >= TIMESTAMP '${todayStr} 00:00:00'`;
   const params = new URLSearchParams({
     where,
     outFields: [
       "ADDRESS", "USE_TYPE",
       ...STREET_USE_FACILITIES.map(f => f[0]),
-      "USE_END_DATE",
+      "USE_START_DATE", "USE_END_DATE",
     ].join(","),
     resultRecordCount: "2000",
     f: "json",
@@ -1358,8 +1379,17 @@ async function fetchStreetActivity() {
       if (!key) continue;
       const impact = describeStreetImpact(a);
       if (!impact) continue;
-      const existing = STREET_ACTIVITY[key];
-      if (!existing || impact.endMs < existing.endMs) STREET_ACTIVITY[key] = impact;
+      if (impact.startMs <= nowMs) {
+        const existing = STREET_ACTIVITY[key];
+        if (!existing || impact.endMs < existing.endMs) STREET_ACTIVITY[key] = impact;
+      } else {
+        const existing = STREET_UPCOMING[key];
+        if (!existing || impact.startMs < existing.startMs) STREET_UPCOMING[key] = impact;
+      }
+    }
+    // Active always wins — drop any upcoming entry for an address that already has one.
+    for (const key of Object.keys(STREET_UPCOMING)) {
+      if (STREET_ACTIVITY[key]) delete STREET_UPCOMING[key];
     }
   } catch (e) {
     console.warn("Street activity fetch failed", e);
@@ -1575,7 +1605,8 @@ function renderGrid(permits) {
     const mha     = mhaKey ? MHA[mhaKey] : null;
 
     // Street activity (Seattle-only — SDOT Street Use permits don't cover Bellevue)
-    const streetAct = p._city === "bellevue" ? null : STREET_ACTIVITY[normalizeAddr(p)];
+    const streetAct      = p._city === "bellevue" ? null : STREET_ACTIVITY[normalizeAddr(p)];
+    const streetUpcoming = !streetAct && p._city !== "bellevue" ? STREET_UPCOMING[normalizeAddr(p)] : null;
 
     const changedFrom = watchChanges[rawNum];
     return `<div class="card${streetAct ? " street-flag" : ""}" data-pn="${num}">
@@ -1596,6 +1627,7 @@ function renderGrid(permits) {
       </div>
       <div class="card-desc">${desc}</div>
       ${streetAct ? `<div class="street-line"><svg viewBox="0 0 12 12" fill="none"><path d="M6 1L11 10.5H1L6 1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 4.5V7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="8.7" r="0.6" fill="currentColor"/></svg>${esc(streetAct.text)} <span class="muted">· ${fmtStreetEnds(streetAct.endMs)}</span></div>` : ""}
+      ${streetUpcoming ? `<div class="street-line upcoming"><svg viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.3"/><path d="M6 3.2V6L8 7.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(streetUpcoming.text)} <span class="muted">· ${fmtStreetBegins(streetUpcoming.startMs)}</span></div>` : ""}
       <div class="card-meta">
         <div class="meta-item">
           <span class="meta-key">Est. Value</span>
