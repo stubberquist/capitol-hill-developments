@@ -362,6 +362,7 @@
 
     /* ── Street activity (SDOT Street Use permits: active ROW work at this address) ── */
     .card.street-flag { border-left: 3px solid var(--street-active); padding-left: 13px; }
+    .card.street-flag-upcoming { border-left: 3px solid var(--accent2); padding-left: 13px; }
     .street-line {
       display: flex;
       align-items: center;
@@ -1609,7 +1610,8 @@ function renderGrid(permits) {
     const streetUpcoming = !streetAct && p._city !== "bellevue" ? STREET_UPCOMING[normalizeAddr(p)] : null;
 
     const changedFrom = watchChanges[rawNum];
-    return `<div class="card${streetAct ? " street-flag" : ""}" data-pn="${num}">
+    const cardFlag = streetAct ? " street-flag" : streetUpcoming ? " street-flag-upcoming" : "";
+    return `<div class="card${cardFlag}" data-pn="${num}">
       <div class="card-header">
         <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
         <span style="display:flex;align-items:center;gap:6px;flex-shrink:0">
