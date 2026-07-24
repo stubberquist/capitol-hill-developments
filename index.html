@@ -1038,16 +1038,27 @@ function toggleTheme() {
 applyTheme(currentTheme);
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
+// Socrata caps each response at $limit, so a query that can match more than one page
+// must paginate with $offset — mirrors arcFetchAll's approach for the Bellevue layer.
 async function fetchPermits() {
-  const params = new URLSearchParams({
-    "$limit": "5000",
-    "$order": "estprojectcost DESC",
-    "$where": `estprojectcost >= ${MIN_VALUE} AND latitude IS NOT NULL`
-  });
-  if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
-  const res = await fetch(`${API}?${params}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  const pageSize = 5000;
+  const maxPages = 10;
+  const all = [];
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({
+      "$limit": String(pageSize),
+      "$offset": String(page * pageSize),
+      "$order": "estprojectcost DESC",
+      "$where": `estprojectcost >= ${MIN_VALUE} AND latitude IS NOT NULL`
+    });
+    if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
+    const res = await fetch(`${API}?${params}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const batch = await res.json();
+    all.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+  return all;
 }
 
 // The Bellevue layer silently caps every response at 2,000 rows (maxRecordCount), so any
@@ -1070,7 +1081,7 @@ async function arcFetchAll(params, maxPages = 5) {
 
 async function fetchBellevuePermits() {
   const features = await arcFetchAll({
-    where: "VALUATION >= 1000000 OR PERMITTYPE IN ('BB','BM','BA','LD')",
+    where: "VALUATION >= 1000000 OR PERMITTYPE IN ('BB','BM','BA','LD','BE','BC')",
     outFields: "PERMITNUMBER,PERMITTYPE,PERMITTYPEDESCRIPTION,SITEADDRESS,PERMITSTATUS,PROJECTDESCRIPTION,APPLIEDDATE,ISSUEDDATE,FINALEDDATE,VALUATION,DWELLINGUNITSCREATED,MBPSTATUSSITE,SUBAREA",
     outSR: "4326",
     returnGeometry: "true",
@@ -1241,7 +1252,10 @@ function getMHAStatus(p, sitePermits) {
 // ── Status helpers ───────────────────────────────────────────────────────────
 function getStatus(p) {
   const s = (p.statuscurrent || p.statusdescription || p.status || "").toLowerCase();
-  if (s.includes("final") || s.includes("complete") || s.includes("closed")) return "complete";
+  // "complete" as a substring also matches "Completeness Check" (an early intake stage) and
+  // "Not Complete" (its opposite) — require it as a whole word and not preceded by "not".
+  const isComplete = /\bcomplete(d)?\b/.test(s) && !/\bnot\s+complete/.test(s);
+  if (s.includes("final") || s.includes("closed") || isComplete) return "complete";
   if (s.includes("issued") || s.includes("permit issued")) return "issued";
   if (s.includes("review") || s.includes("design") || s.includes("in queue") ||
       s.includes("correction") || s.includes("additional info")) return "review";
