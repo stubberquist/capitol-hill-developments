@@ -7,7 +7,9 @@
 # so the series are baked in as a small constant.
 # Run weekly by .github/workflows/refresh-sip.yml; Zillow updates monthly.
 
-set -e
+# pipefail matters here: the Zillow fetches pipe curl into grep, and without it a failed
+# curl is masked by grep's exit status and the script marches on with an empty CSV.
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HTML="$SCRIPT_DIR/index.html"
@@ -20,13 +22,13 @@ MORTGAGE_URL="https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
 POP_URL="https://fred.stlouisfed.org/graph/fredgraph.csv?id=STWPOP"
 
 echo "Fetching Zillow ZORI (rent index)..."
-curl -s "$ZORI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zori.csv"
+curl -sf "$ZORI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zori.csv"
 echo "Fetching Zillow ZHVI (home values, ~90MB streamed)..."
-curl -s "$ZHVI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zhvi.csv"
+curl -sf "$ZHVI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zhvi.csv"
 echo "Fetching FRED 30-yr mortgage rate..."
-curl -s "$MORTGAGE_URL" > "$TMP/mortgage.csv"
+curl -sf "$MORTGAGE_URL" > "$TMP/mortgage.csv"
 echo "Fetching FRED metro population (STWPOP)..."
-curl -s "$POP_URL" > "$TMP/pop.csv"
+curl -sf "$POP_URL" > "$TMP/pop.csv"
 
 DATE=$(date +%Y-%m-%d)
 

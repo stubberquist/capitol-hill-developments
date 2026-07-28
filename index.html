@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Large Developments Viewer</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://services.arcgis.com https://www.seattleinprogress.com; manifest-src 'self'; worker-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src https://*.basemaps.cartocdn.com data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://services.arcgis.com https://www.seattleinprogress.com; manifest-src 'self'; worker-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="theme-color" content="#0f1117" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-192.png" />
@@ -340,6 +340,12 @@
     .permit-type-tag.new-construction { background: rgba(251,191,36,0.12);  color: var(--yellow); }
     .permit-type-tag.demolition       { background: rgba(248,113,113,0.12); color: var(--red); }
     .permit-type-tag.alteration       { background: rgba(251,146,60,0.12);  color: #fb923c; }
+    /* Early site work (shoring/excavation) — shares the street-activity accent, since both
+       mean "physical work at the site" rather than a paperwork milestone. */
+    .permit-type-tag.site-work {
+      background: var(--street-active-bg);
+      color: var(--street-active);
+    }
 
     .card-links {
       display: flex;
@@ -460,6 +466,13 @@
     }
 
     .sa-val { font-size: 12px; font-weight: 500; text-align: right; }
+    .sa-permit-link {
+      font-family: monospace;
+      font-size: 11px;
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .sa-permit-link:hover { text-decoration: underline; }
 
     .mha-badge {
       display: inline-flex;
@@ -901,11 +914,12 @@
   <input type="text" id="search" placeholder="Search address or description…" aria-label="Search address or description" style="min-width:200px" />
 
   <div class="view-toggle">
-    <button id="btn-watched" onclick="toggleWatchedFilter()" title="Show only starred projects">★ Watched</button>
-    <button id="btn-grid" class="active" onclick="setView('grid')">⊞ Cards</button>
-    <button id="btn-map" onclick="setView('map')">⊕ Map</button>
-    <button id="btn-analytics" onclick="setView('analytics')">∿ Analytics</button>
-    <button id="btn-theme" onclick="toggleTheme()" title="Switch light/dark theme">◐</button>
+    <button id="btn-watched" title="Show only starred projects">★ Watched</button>
+    <button id="btn-streetwork" title="Show only projects with active or upcoming street closures">⚠ Street Work</button>
+    <button id="btn-grid" class="active">⊞ Cards</button>
+    <button id="btn-map">⊕ Map</button>
+    <button id="btn-analytics">∿ Analytics</button>
+    <button id="btn-theme" title="Switch light/dark theme">◐</button>
   </div>
 </div>
 
@@ -1036,6 +1050,8 @@ let currentView = "grid";
 let currentCity = "seattle";
 let recentMode  = false;
 let recentCount = 20;
+let streetWorkLayer   = null;   // Leaflet LayerGroup for the citywide SDOT overlay
+let streetWorkLayerOn = false;
 
 // ── Watchlist & visit tracking (localStorage) ─────────────────────────────────
 function loadJSON(key, fallback) {
@@ -1046,6 +1062,7 @@ function saveJSON(key, value) {
 }
 
 let watchedOnly = false;
+let streetWorkOnly = false;
 const watchlist = new Set(loadJSON("chd-watchlist", []));
 const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); } catch { return null; } })();
 const watchStatusPrev = loadJSON("chd-watch-status", {});
@@ -1062,6 +1079,24 @@ function toggleWatchedFilter() {
   watchedOnly = !watchedOnly;
   document.getElementById("btn-watched").classList.toggle("active", watchedOnly);
   applyFilters();
+}
+
+function toggleStreetWorkFilter() {
+  streetWorkOnly = !streetWorkOnly;
+  document.getElementById("btn-streetwork").classList.toggle("active", streetWorkOnly);
+  applyFilters();
+}
+
+// SDOT Street Use data is Seattle-only, so the toggle is meaningless (and would return zero
+// results) for Bellevue — hide it there, clearing the filter first so it can't strand the view.
+function syncStreetWorkButton() {
+  const btn = document.getElementById("btn-streetwork");
+  const supported = currentCity !== "bellevue";
+  if (!supported && streetWorkOnly) {
+    streetWorkOnly = false;
+    btn.classList.remove("active");
+  }
+  btn.hidden = !supported;
 }
 
 // ISO strings compare lexically, so string > string works for "is after"
@@ -1137,17 +1172,18 @@ async function fetchPermits() {
   return all;
 }
 
-// The Bellevue layer silently caps every response at 2,000 rows (maxRecordCount), so any
-// query that can match more must paginate with resultOffset until exceededTransferLimit clears.
-async function arcFetchAll(params, maxPages = 5) {
+// ArcGIS layers silently cap every response at 2,000 rows (maxRecordCount), so any query
+// that can match more must paginate with resultOffset until exceededTransferLimit clears.
+// Used for both the Bellevue permit layer and SDOT's Street Use layer.
+async function arcFetchAll(params, maxPages = 5, baseUrl = BELLEVUE_API, label = "Bellevue") {
   const features = [];
   for (let page = 0; page < maxPages; page++) {
     const p = new URLSearchParams(params);
     p.set("resultOffset", String(features.length));
-    const res = await fetch(`${BELLEVUE_API}?${p}`);
-    if (!res.ok) throw new Error(`Bellevue API HTTP ${res.status}`);
+    const res = await fetch(`${baseUrl}?${p}`);
+    if (!res.ok) throw new Error(`${label} API HTTP ${res.status}`);
     const data = await res.json();
-    if (data.error) throw new Error(data.error.message || "Bellevue query failed");
+    if (data.error) throw new Error(data.error.message || `${label} query failed`);
     const batch = data.features || [];
     features.push(...batch);
     if (!data.exceededTransferLimit || batch.length === 0) break;
@@ -1308,7 +1344,9 @@ let STREET_ACTIVITY = {};
 // opened yet (scheduled within STREET_UPCOMING_WINDOW_DAYS). Only set when there's
 // no currently-active permit at that address — active always takes priority.
 let STREET_UPCOMING = {};
-const STREET_UPCOMING_WINDOW_DAYS = 90;
+// 120 days captures ~93% of future-dated SDOT starts; 90 caught 88%, and the curve
+// flattens past 150 (the remaining few sit 200-338 days out). Measured 2026-07-27.
+const STREET_UPCOMING_WINDOW_DAYS = 120;
 
 const STREET_USE_URL = "https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/SU_Permit_Data_Model_Relationships/FeatureServer/2/query";
 const STREET_USE_FACILITIES = [
@@ -1360,21 +1398,19 @@ async function fetchStreetActivity() {
   // the upcoming horizon — bucketed client-side by comparing USE_START_DATE to now.
   const where = `PERMIT_TYPE_ALIAS IN ('Construction and Storage Containers','ROW Construction Permit','Shoring') ` +
     `AND PERMIT_STATUS='Issued' AND USE_START_DATE <= TIMESTAMP '${horizonStr} 23:59:59' AND USE_END_DATE >= TIMESTAMP '${todayStr} 00:00:00'`;
-  const params = new URLSearchParams({
-    where,
-    outFields: [
-      "ADDRESS", "USE_TYPE",
-      ...STREET_USE_FACILITIES.map(f => f[0]),
-      "USE_START_DATE", "USE_END_DATE",
-    ].join(","),
-    resultRecordCount: "2000",
-    f: "json",
-  });
   try {
-    const res = await fetch(`${STREET_USE_URL}?${params}`);
-    const data = await res.json();
-    if (!data.features) return;
-    for (const f of data.features) {
+    const features = await arcFetchAll({
+      where,
+      outFields: [
+        "ADDRESS", "USE_TYPE",
+        ...STREET_USE_FACILITIES.map(f => f[0]),
+        "USE_START_DATE", "USE_END_DATE",
+      ].join(","),
+      returnGeometry: "false",
+      resultRecordCount: "2000",
+      f: "json",
+    }, 5, STREET_USE_URL, "SDOT Street Use");
+    for (const f of features) {
       const a = f.attributes;
       const key = normalizeAddrStr(a.ADDRESS);
       if (!key) continue;
@@ -1395,6 +1431,59 @@ async function fetchStreetActivity() {
   } catch (e) {
     console.warn("Street activity fetch failed", e);
   }
+}
+
+// Lookups for a permit's street activity. SDOT covers Seattle only, so Bellevue permits
+// never match. Active always suppresses upcoming at the same address.
+function streetActivityFor(p) {
+  if (p._city === "bellevue") return null;
+  return STREET_ACTIVITY[normalizeAddr(p)] || null;
+}
+
+function streetUpcomingFor(p) {
+  if (p._city === "bellevue") return null;
+  const key = normalizeAddr(p);
+  return STREET_ACTIVITY[key] ? null : (STREET_UPCOMING[key] || null);
+}
+
+function hasStreetWork(p) {
+  return !!(streetActivityFor(p) || streetUpcomingFor(p));
+}
+
+// ── Citywide street-work map layer ────────────────────────────────────────────
+// The badge above only surfaces SDOT permits whose address matches a tracked project —
+// about a quarter of them. This layer shows every one, matched or not, as the actual
+// affected street segment. Geometry roughly doubles the payload, so it's fetched lazily
+// the first time the layer is switched on rather than on page load.
+let streetWorkGeo = null;      // cached feature array, null until first load
+let streetWorkLoading = false;
+
+async function fetchStreetWorkGeo() {
+  if (streetWorkGeo || streetWorkLoading) return streetWorkGeo;
+  streetWorkLoading = true;
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const horizonStr = new Date(today.getTime() + STREET_UPCOMING_WINDOW_DAYS * 86400000)
+    .toISOString().slice(0, 10);
+  const where = `PERMIT_TYPE_ALIAS IN ('Construction and Storage Containers','ROW Construction Permit','Shoring') ` +
+    `AND PERMIT_STATUS='Issued' AND USE_START_DATE <= TIMESTAMP '${horizonStr} 23:59:59' AND USE_END_DATE >= TIMESTAMP '${todayStr} 00:00:00'`;
+  try {
+    streetWorkGeo = await arcFetchAll({
+      where,
+      outFields: ["ADDRESS", "USE_TYPE", ...STREET_USE_FACILITIES.map(f => f[0]),
+                  "USE_START_DATE", "USE_END_DATE"].join(","),
+      returnGeometry: "true",
+      outSR: "4326",
+      resultRecordCount: "2000",
+      f: "json",
+    }, 5, STREET_USE_URL, "SDOT Street Use");
+  } catch (e) {
+    console.warn("Street work layer fetch failed", e);
+    streetWorkGeo = [];
+  } finally {
+    streetWorkLoading = false;
+  }
+  return streetWorkGeo;
 }
 
 // ── MHA (Mandatory Housing Affordability) detection ───────────────────────────
@@ -1542,6 +1631,19 @@ function getPermitTypeLabel(p) {
   return { label: raw ? raw.replace(/\b\w/g, c => c.toUpperCase()) : "Permit", cls: "" };
 }
 
+// Early site work (shoring/excavation/grading) filed ahead of the main construction permit —
+// the closest thing the permit data has to a "ground has been broken" signal.
+// Anchored at the start of the description on purpose: "Shoring and excavation for future
+// mixed-use building" is a site-work permit, while "Construct a mixed use building, occupy
+// per plan. Shoring is included." is the main permit merely mentioning it. Of 560 $1M+
+// Seattle permits whose text mentions shoring/excavation, this matches 272 (measured
+// 2026-07-27); a bare substring test would wrongly flag all 560.
+const SITE_WORK_RE = /^\s*(shoring|excavation|grading)\b/i;
+
+function isSiteWorkPermit(p) {
+  return SITE_WORK_RE.test(p.description || "");
+}
+
 // ── Render grid ──────────────────────────────────────────────────────────────
 const GRID_PAGE = 300;   // cards per page — render incrementally so 5k results don't lock up the DOM
 let gridLimit = GRID_PAGE;
@@ -1606,8 +1708,8 @@ function renderGrid(permits) {
     const mha     = mhaKey ? MHA[mhaKey] : null;
 
     // Street activity (Seattle-only — SDOT Street Use permits don't cover Bellevue)
-    const streetAct      = p._city === "bellevue" ? null : STREET_ACTIVITY[normalizeAddr(p)];
-    const streetUpcoming = !streetAct && p._city !== "bellevue" ? STREET_UPCOMING[normalizeAddr(p)] : null;
+    const streetAct      = streetActivityFor(p);
+    const streetUpcoming = streetUpcomingFor(p);
 
     const changedFrom = watchChanges[rawNum];
     const cardFlag = streetAct ? " street-flag" : streetUpcoming ? " street-flag-upcoming" : "";
@@ -1624,6 +1726,7 @@ function renderGrid(permits) {
       <div class="card-address">${addr}</div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:-4px">
         <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
+        ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work" title="Shoring/excavation filed ahead of the main construction permit">Site Work</span>` : ""}
         <span class="use-tag ${use}">${useLabel(use)}</span>
         ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
       </div>
@@ -1654,7 +1757,7 @@ function renderGrid(permits) {
         <div class="sa-row">
           <span class="sa-label">Last Filed</span>
           <span class="sa-val">${lastDate}${lastNum
-            ? ` · <a href="${lastUrl}" target="_blank" rel="noopener" style="font-family:monospace;font-size:11px;color:var(--accent);text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${esc(lastNum)}</a>`
+            ? ` · <a class="sa-permit-link" href="${lastUrl}" target="_blank" rel="noopener">${esc(lastNum)}</a>`
             : ""}</span>
         </div>
         <div class="sa-row">
@@ -1728,7 +1831,7 @@ function openModal(pn) {
     .slice(0, 8);
 
   document.getElementById("modal-body").innerHTML = `
-    <button class="modal-close" onclick="closeModal()" aria-label="Close">✕</button>
+    <button class="modal-close" aria-label="Close">✕</button>
     <h2>${esc(rawAddr)}</h2>
     <div class="modal-sub">
       <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
@@ -1737,6 +1840,7 @@ function openModal(pn) {
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
+      ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work" title="Shoring/excavation filed ahead of the main construction permit">Site Work</span>` : ""}
       <span class="use-tag ${getBuildingUse(p)}">${useLabel(getBuildingUse(p))}</span>
       ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
     </div>
@@ -1786,6 +1890,7 @@ document.getElementById("grid-view").addEventListener("click", e => {
   if (card) openModal(card.dataset.pn);
 });
 document.getElementById("modal-backdrop").addEventListener("click", e => {
+  if (e.target.closest(".modal-close")) { closeModal(); return; }
   const star = e.target.closest(".star-btn");
   if (star) {
     toggleWatch(star.dataset.pn);
@@ -1860,6 +1965,54 @@ function clusterIconCreate(cluster) {
   });
 }
 
+// Draws the citywide SDOT overlay onto the existing map. Active closures use the same
+// orange as the card stripe, upcoming ones the same violet, so the map reads like the cards.
+function drawStreetWorkLayer() {
+  if (!map || !streetWorkGeo) return;
+  if (streetWorkLayer) { streetWorkLayer.remove(); streetWorkLayer = null; }
+  const nowMs = Date.now();
+  const lines = [];
+  for (const f of streetWorkGeo) {
+    const paths = f.geometry?.paths;
+    if (!paths || !paths.length) continue;
+    const a = f.attributes;
+    const impact = describeStreetImpact(a);
+    if (!impact) continue;   // no sidewalk/lane/parking impact — same bar the badge uses
+    const upcoming = impact.startMs > nowMs;
+    const line = L.polyline(
+      paths.map(path => path.map(([lon, lat]) => [lat, lon])),
+      { color: upcoming ? "#a78bfa" : "#f97316", weight: 4, opacity: 0.75 }
+    );
+    line.bindPopup(`
+      <div style="padding:10px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px">${esc(a.ADDRESS || "Address unknown")}</div>
+        <div style="font-size:12px;color:${upcoming ? "#a78bfa" : "#f97316"};font-weight:500">${esc(impact.text)}</div>
+        <div style="font-size:11px;opacity:0.7;margin-top:4px">
+          ${upcoming ? esc(fmtStreetBegins(impact.startMs)) : esc(fmtStreetEnds(impact.endMs))}
+        </div>
+      </div>`);
+    lines.push(line);
+  }
+  streetWorkLayer = L.layerGroup(lines).addTo(map);
+  // Keep the overlay under the permit pins so project markers stay clickable
+  streetWorkLayer.eachLayer(l => l.bringToBack?.());
+}
+
+async function toggleStreetWorkLayer() {
+  streetWorkLayerOn = !streetWorkLayerOn;
+  if (!streetWorkLayerOn) {
+    if (streetWorkLayer) { streetWorkLayer.remove(); streetWorkLayer = null; }
+    renderMap(getFilteredList());
+    return;
+  }
+  const btn = document.querySelector("#map-streetwork-btn");
+  if (btn && !streetWorkGeo) { btn.textContent = "Loading…"; btn.disabled = true; }
+  await fetchStreetWorkGeo();
+  if (!streetWorkLayerOn) return;   // toggled back off while loading
+  drawStreetWorkLayer();
+  renderMap(getFilteredList());
+}
+
 function renderMap(permits) {
   if (!map) {
     const initCenter = currentCity === "bellevue" ? [47.610, -122.200] : [47.608, -122.335];
@@ -1895,9 +2048,21 @@ function renderMap(permits) {
         const active = n === 0 ? !recentMode : (recentMode && recentCount === n);
         return `<button class="recent-btn${active?" active":""}" data-n="${n}">${label}</button>`;
       }).join("")}
-    </div>`;
+    </div>` +
+    // SDOT Street Use is Seattle-only, so the overlay is offered for Seattle only
+    (currentCity === "bellevue" ? "" : `
+    <div class="leg-title" style="margin-top:10px">Street Work</div>
+    <div style="display:flex;gap:4px;margin-top:6px">
+      <button class="recent-btn${streetWorkLayerOn ? " active" : ""}" id="map-streetwork-btn">${streetWorkLayerOn ? "On" : "Show citywide"}</button>
+    </div>
+    ${streetWorkLayerOn ? `<div class="leg-row" style="margin-top:6px">
+      <div class="leg-dot" style="background:#f97316"></div><span>Active closure</span>
+    </div>
+    <div class="leg-row">
+      <div class="leg-dot" style="background:#a78bfa"></div><span>Upcoming closure</span>
+    </div>` : ""}`);
   document.getElementById("map").appendChild(recentCtrl);
-  recentCtrl.querySelectorAll(".recent-btn").forEach(btn => {
+  recentCtrl.querySelectorAll(".recent-btn[data-n]").forEach(btn => {
     btn.addEventListener("click", function () {
       const n = parseInt(this.dataset.n);
       recentMode  = n > 0;
@@ -1905,6 +2070,7 @@ function renderMap(permits) {
       renderMap(getFilteredList());
     });
   });
+  recentCtrl.querySelector("#map-streetwork-btn")?.addEventListener("click", toggleStreetWorkLayer);
 
   // Markers live in a cluster group (falls back to plain markers if the plugin failed to load)
   const useCluster = typeof L.markerClusterGroup === "function";
@@ -1995,6 +2161,7 @@ function renderMap(permits) {
         <div class="card-address" style="margin-bottom:6px">${addr}</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
+          ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work">Site Work</span>` : ""}
           <span class="use-tag ${use}">${useLabel(use)}</span>
           ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
         </div>
@@ -2020,7 +2187,8 @@ function renderMap(permits) {
 // ── Analytics ─────────────────────────────────────────────────────────────────
 // Server-side aggregates over the FULL datasets (not just the 5k loaded permits).
 let analyticsScope = false;          // false = all permits, true = $1M+ only
-const analyticsCache = new Map();    // `${city}:${scope}` → Promise<data>
+const analyticsCache = new Map();    // `${city}:${scope}` → { ts, promise }
+const ANALYTICS_TTL_MS = 30 * 60 * 1000;   // 30 min — permit data updates daily, not hourly
 const anCharts = {};                 // canvas id → Chart instance
 
 if (window.Chart) {
@@ -2452,15 +2620,21 @@ async function loadAnalytics() {
     return;
   }
   const key = `${currentCity}:${analyticsScope}`;
-  if (!analyticsCache.has(key)) {
+  const cached = analyticsCache.get(key);
+  // Entries expire so a tab left open overnight doesn't keep showing yesterday's YTD numbers
+  const fresh = cached && (Date.now() - cached.ts) < ANALYTICS_TTL_MS;
+  if (!fresh) {
     document.getElementById("an-stats").innerHTML =
       `<div class="an-stat"><div class="label">Loading…</div><div class="vs">Aggregating citywide permit data</div></div>`;
-    analyticsCache.set(key, currentCity === "bellevue"
-      ? fetchBellevueAnalytics(analyticsScope)
-      : fetchSeattleAnalytics(analyticsScope));
+    analyticsCache.set(key, {
+      ts: Date.now(),
+      promise: currentCity === "bellevue"
+        ? fetchBellevueAnalytics(analyticsScope)
+        : fetchSeattleAnalytics(analyticsScope),
+    });
   }
   try {
-    renderAnalytics(await analyticsCache.get(key));
+    renderAnalytics(await analyticsCache.get(key).promise);
   } catch (err) {
     analyticsCache.delete(key);
     document.getElementById("an-stats").innerHTML =
@@ -2582,6 +2756,7 @@ function getFilteredList() {
   const searchF = document.getElementById("search").value.toLowerCase();
   return allPermits.filter(p => {
     if (watchedOnly && !watchlist.has(p.permitnum)) return false;
+    if (streetWorkOnly && !hasStreetWork(p)) return false;
     if (!neighborhoodMatch(p, nbF)) return false;
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
@@ -2667,6 +2842,7 @@ async function init() {
     document.getElementById("scope-large").classList.add("active");
   }
   if (view && view !== "grid") setView(view);
+  syncStreetWorkButton();
   try {
     [allPermits] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
@@ -2725,6 +2901,7 @@ document.getElementById("filter-city").addEventListener("change", async function
   historyLoaded = false;
   document.getElementById("filter-neighborhood").value = "";
   populateNeighborhoodDropdown();
+  syncStreetWorkButton();
 
   const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
   document.getElementById("grid-view").innerHTML =
@@ -2736,6 +2913,9 @@ document.getElementById("filter-city").addEventListener("change", async function
 
   // Reset map so it re-initializes at the right city center next render
   if (map) { map.remove(); map = null; markers = []; clusterGroup = null; tileLayer = null; }
+  // The overlay belonged to the destroyed map instance; drop it (cached data is kept)
+  streetWorkLayer = null;
+  streetWorkLayerOn = false;
 
   try {
     [allPermits] = await Promise.all([
@@ -2757,6 +2937,15 @@ document.getElementById("filter-city").addEventListener("change", async function
 // ── Event listeners ───────────────────────────────────────────────────────────
 ["filter-type","filter-minval","sort-by"].forEach(id =>
   document.getElementById(id).addEventListener("change", applyFilters));
+
+// Toolbar buttons — wired here rather than via onclick= so no executable markup ships
+// in the HTML (see the CSP note at the top of the file).
+document.getElementById("btn-watched").addEventListener("click", toggleWatchedFilter);
+document.getElementById("btn-streetwork").addEventListener("click", toggleStreetWorkFilter);
+document.getElementById("btn-grid").addEventListener("click", () => setView("grid"));
+document.getElementById("btn-map").addEventListener("click", () => setView("map"));
+document.getElementById("btn-analytics").addEventListener("click", () => setView("analytics"));
+document.getElementById("btn-theme").addEventListener("click", toggleTheme);
 
 let searchTimer;
 document.getElementById("search").addEventListener("input", () => {

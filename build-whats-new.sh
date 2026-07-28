@@ -14,7 +14,7 @@ TODAY=$(date -u +%Y-%m-%d)
 TOKEN="8TWYR3dr4BMUJcfxCbdwGw7pv"
 
 echo "Fetching notable Seattle filings since $SINCE..."
-curl -s -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
+curl -sf -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
   --data-urlencode "\$select=permitnum,originaladdress1,description,estprojectcost,housingunitsadded,applieddate" \
   --data-urlencode "\$where=applieddate >= '$SINCE' AND (estprojectcost >= 5000000 OR housingunitsadded >= 20)" \
   --data-urlencode "\$order=estprojectcost DESC" \
@@ -22,7 +22,7 @@ curl -s -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
   --data-urlencode "\$\$app_token=$TOKEN" > "$TMP/seattle.json"
 
 echo "Fetching notable Bellevue filings since $SINCE..."
-curl -s -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query" \
+curl -sf -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query" \
   --data-urlencode "where=APPLIEDDATE >= DATE '$SINCE' AND (VALUATION >= 5000000 OR DWELLINGUNITSCREATED >= 20)" \
   --data-urlencode "outFields=PERMITNUMBER,SITEADDRESS,PROJECTDESCRIPTION,VALUATION,DWELLINGUNITSCREATED,APPLIEDDATE" \
   --data-urlencode "orderByFields=VALUATION DESC" \

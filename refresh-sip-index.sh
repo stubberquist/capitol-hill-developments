@@ -12,7 +12,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "Fetching SeattleInProgress project index..."
-curl -s "https://www.seattleinprogress.com/api/geo?left=-122.54&right=-122.10&top=47.78&bottom=47.46" > "$TMP/sip.json"
+curl -sf "https://www.seattleinprogress.com/api/geo?left=-122.54&right=-122.10&top=47.78&bottom=47.46" > "$TMP/sip.json"
 DATE=$(date +%Y-%m-%d)
 
 python3 - "$HTML" "$DATE" "$TMP/sip.json" << 'PYEOF'
