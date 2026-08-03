@@ -41,6 +41,11 @@ jobs:
             git push
           )
 
+      # Workflow status alone doesn't prove anything shipped — a Pages deploy can fail after a
+      # clean push and silently leave the old build up. This checks what's actually served.
+      - name: Verify the live site is serving this build
+        run: bash verify-deploy.sh
+
       - name: Open issue on failure
         if: failure()
         env:

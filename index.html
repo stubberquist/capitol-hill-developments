@@ -959,6 +959,7 @@
       <option value="demolition">Demolition</option>
       <option value="alteration">Alteration</option>
       <option value="land-use">Land Use / Design Review</option>
+      <option value="site-work">Site Work (shoring/excavation)</option>
       <option value="other">Other</option>
     </select>
   </div>
@@ -2016,6 +2017,10 @@ function clusterRing(counts, total) {
   return stops.length ? `conic-gradient(${stops.join(",")})` : MAP_COLORS.other;
 }
 
+// Narrow screens get more aggressive merging and smaller markers: at 390px a 60px cluster
+// is ~18% of the map's width, so several of them overlap into an unreadable pile.
+const NARROW_MAP = () => window.innerWidth <= 640;
+
 function clusterIconCreate(cluster) {
   const children = cluster.getAllChildMarkers();
   const counts = {};
@@ -2027,7 +2032,9 @@ function clusterIconCreate(cluster) {
   });
   const count = children.length;
   const label = hasUnits ? fmtCompact(units) : String(count);
-  const size  = Math.round(Math.max(34, Math.min(60, 30 + Math.sqrt(count) * 3.4)));
+  const size  = NARROW_MAP()
+    ? Math.round(Math.max(30, Math.min(46, 26 + Math.sqrt(count) * 2.6)))
+    : Math.round(Math.max(34, Math.min(60, 30 + Math.sqrt(count) * 3.4)));
   return L.divIcon({
     className: "chd-cluster",
     html: `<div class="cc-ring" style="width:${size}px;height:${size}px;background:${clusterRing(counts, count)}">
@@ -2221,7 +2228,11 @@ function renderMap(permits) {
     clusterGroup.clearLayers();
   } else if (useCluster) {
     clusterGroup = L.markerClusterGroup({
-      maxClusterRadius: 46, disableClusteringAtZoom: 16, showCoverageOnHover: false,
+      // Larger radius = nearby clusters merge instead of overlapping, which is the actual
+      // fix for the pile-up on a phone; the higher zoom threshold keeps them merged longer.
+      maxClusterRadius: NARROW_MAP() ? 80 : 46,
+      disableClusteringAtZoom: NARROW_MAP() ? 17 : 16,
+      showCoverageOnHover: false,
       iconCreateFunction: clusterIconCreate,
       spiderfyShapePositions: (count, center) => {
         // Wider spiderfy spacing than the plugin default so legs don't overlap our larger pins
@@ -2278,8 +2289,9 @@ function renderMap(permits) {
     // Size encodes scale: unit count when known, else declared value
     const unitsN = parseFloat(units) || 0;
     const valueN = parseFloat(p.estprojectcost) || 0;
-    const radius = recentSet ? 9 :
-      Math.max(6, Math.min(17, unitsN ? 5.5 + Math.sqrt(unitsN) * 0.75 : 5.5 + Math.sqrt(valueN / 1e6) * 0.6));
+    const rMax   = NARROW_MAP() ? 13 : 17;
+    const radius = recentSet ? (NARROW_MAP() ? 7 : 9) :
+      Math.max(6, Math.min(rMax, unitsN ? 5.5 + Math.sqrt(unitsN) * 0.75 : 5.5 + Math.sqrt(valueN / 1e6) * 0.6));
     const diameter = radius * 2;
     // A real L.Marker (not circleMarker/SVG) — shares markerPane with cluster bubbles, so
     // z-order and spiderfy-to-front both work; circleMarker's overlayPane always sits underneath.
@@ -2906,7 +2918,10 @@ function getFilteredList() {
     if (cost < minValF && !(p._city === "bellevue" && !p.estprojectcost)) return false;
     if (statusF.length && !statusF.includes(getStatus(p))) return false;
     if (useF.length && !useF.includes(getBuildingUse(p))) return false;
-    if (typeF && (getPermitTypeLabel(p).cls || "other") !== typeF) return false;
+    // "Site work" cuts across the permit-type buckets — it's a description-text signal, not a
+    // permittypemapped value — so it gets its own branch rather than a cls comparison.
+    if (typeF === "site-work") { if (!isSiteWorkPermit(p)) return false; }
+    else if (typeF && (getPermitTypeLabel(p).cls || "other") !== typeF) return false;
     if (searchF) {
       const hay = [(p.originaladdress1||""), (p.description||""), (p.permitnum||"")].join(" ").toLowerCase();
       if (!hay.includes(searchF)) return false;
@@ -3059,6 +3074,7 @@ document.getElementById("filter-city").addEventListener("change", async function
   // The overlay belonged to the destroyed map instance; drop it (cached data is kept)
   streetWorkLayer = null;
   streetWorkLayerOn = false;
+  openControlId = null;   // else a popout survives the teardown and reopens on the next render
 
   try {
     [allPermits] = await Promise.all([
