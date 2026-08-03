@@ -687,42 +687,80 @@
       font-size: 12px; font-weight: 700; line-height: 1;
     }
 
-    /* ── Map: Recent Updates control ── */
-    #map-recent-ctrl {
+    /* ── Map control rail ──────────────────────────────────────────────────────
+       A column of icon buttons at top-right. A "toggle" control flips on click; an
+       "options" control pops its choices out to the left as bubbles. Only the buttons
+       take pointer events, so the rail never swallows a map drag. */
+    #map-ctrls {
       position: absolute;
       top: 10px;
       right: 10px;
       z-index: 1000;
-      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .mc-item { display: flex; align-items: center; gap: 6px; }
+
+    .mc-icon {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      border-radius: 50%;
       background: color-mix(in srgb, var(--surface) 92%, transparent);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 12px;
       color: var(--text);
-      backdrop-filter: blur(4px);
-    }
-    .recent-btn {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      color: var(--muted);
-      padding: 3px 9px;
-      border-radius: 4px;
+      font-size: 14px;
+      line-height: 1;
       cursor: pointer;
-      font-size: 11px;
-      font-weight: 600;
-      transition: all 0.15s;
+      pointer-events: auto;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
-    .recent-btn.active {
+    .mc-icon:hover { border-color: var(--accent); }
+    .mc-icon.active {
       background: var(--accent);
       border-color: var(--accent);
       color: #fff;
     }
+    .mc-icon.open { border-color: var(--accent); }
+    .mc-icon.busy { opacity: 0.6; cursor: progress; }
 
-    /* The panel's backdrop shouldn't swallow map drags — only its controls are
-       interactive. #map-legend already does this; this brings the control panel in line. */
-    #map-recent-ctrl { pointer-events: none; }
-    #map-recent-ctrl button { pointer-events: auto; }
+    .mc-bubbles { display: flex; gap: 5px; }
+    /* Equal-specificity guard: without this the UA's [hidden] rule loses to .mc-bubbles */
+    .mc-bubbles[hidden] { display: none; }
+
+    .mc-bubble {
+      background: color-mix(in srgb, var(--surface) 94%, transparent);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 11px;
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      pointer-events: auto;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+      animation: mc-pop 0.16s ease-out backwards;
+    }
+    .mc-bubble:hover { border-color: var(--accent); }
+    .mc-bubble.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    @keyframes mc-pop {
+      from { opacity: 0; transform: translateX(8px) scale(0.9); }
+      to   { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .mc-bubble { animation: none; }
+    }
 
     /* ── Map on small screens ──────────────────────────────────────────────────
        At 390px the two floating panels covered ~44% of the map, and the control
@@ -745,9 +783,9 @@
       #map-legend .leg-row { margin-bottom: 0; gap: 5px; }
       #map-legend .leg-note { display: none; }
 
-      #map-recent-ctrl { padding: 7px 9px; }
-      #map-recent-ctrl .leg-title { margin-bottom: 5px; }
-      .recent-btn { padding: 3px 7px; font-size: 10px; }
+      /* Comfortable tap targets on touch, and room for bubbles on a narrow map */
+      .mc-icon { width: 38px; height: 38px; font-size: 15px; }
+      .mc-bubble { padding: 7px 12px; font-size: 12px; }
     }
 
     /* ── Analytics view ── */
@@ -2040,12 +2078,125 @@ async function toggleStreetWorkLayer() {
     renderMap(getFilteredList());
     return;
   }
-  const btn = document.querySelector("#map-streetwork-btn");
-  if (btn && !streetWorkGeo) { btn.textContent = "Loading…"; btn.disabled = true; }
-  await fetchStreetWorkGeo();
+  // fetchStreetWorkGeo flips streetWorkLoading synchronously, so re-rendering the rail
+  // right after kicking it off is what puts the icon into its busy state.
+  const pending = fetchStreetWorkGeo();
+  renderMapControls();
+  await pending;
   if (!streetWorkLayerOn) return;   // toggled back off while loading
   drawStreetWorkLayer();
   renderMap(getFilteredList());
+}
+
+// ── Map control rail ──────────────────────────────────────────────────────────
+// To add a control, append one entry. Two kinds:
+//   "options" — clicking the icon pops the choices out to the left as bubbles
+//   "toggle"  — clicking the icon flips it straight away, no bubbles
+const MAP_CONTROLS = [
+  {
+    id: "recent",
+    icon: "◕",
+    title: "Recent updates",
+    type: "options",
+    isActive: () => recentMode,
+    options: [
+      { value: 0,  label: "All"    },
+      { value: 10, label: "Top 10" },
+      { value: 20, label: "Top 20" },
+      { value: 50, label: "Top 50" },
+    ],
+    isSelected: o => o.value === 0 ? !recentMode : (recentMode && recentCount === o.value),
+    onSelect: o => {
+      recentMode = o.value > 0;
+      if (o.value > 0) recentCount = o.value;
+      renderMap(getFilteredList());
+    },
+  },
+  {
+    id: "streetwork",
+    icon: "⚠",
+    title: "Citywide street work",
+    type: "toggle",
+    hidden:   () => currentCity === "bellevue",   // SDOT Street Use is Seattle-only
+    isActive: () => streetWorkLayerOn,
+    isBusy:   () => streetWorkLoading,
+    onToggle: toggleStreetWorkLayer,
+  },
+];
+
+let openControlId = null;   // id of the control whose bubbles are showing, if any
+
+function renderMapControls() {
+  const mapEl = document.getElementById("map");
+  if (!mapEl) return;
+  document.getElementById("map-ctrls")?.remove();
+
+  const rail = document.createElement("div");
+  rail.id = "map-ctrls";
+  rail.innerHTML = MAP_CONTROLS.filter(c => !c.hidden?.()).map(c => {
+    const cls = [
+      c.isActive?.() ? "active" : "",
+      c.isBusy?.()   ? "busy"   : "",
+      openControlId === c.id ? "open" : "",
+    ].filter(Boolean).join(" ");
+    const bubbles = c.type === "options"
+      ? `<div class="mc-bubbles"${openControlId === c.id ? "" : " hidden"}>${
+          c.options.map((o, i) =>
+            `<button class="mc-bubble${c.isSelected(o) ? " active" : ""}" data-ctrl="${c.id}" data-i="${i}"
+               style="animation-delay:${i * 25}ms">${esc(o.label)}</button>`).join("")
+        }</div>`
+      : "";
+    return `<div class="mc-item">${bubbles}<button class="mc-icon ${cls}" data-ctrl="${c.id}"
+      title="${esc(c.title)}" aria-label="${esc(c.title)}">${c.icon}</button></div>`;
+  }).join("");
+  mapEl.appendChild(rail);
+
+  rail.querySelectorAll(".mc-icon").forEach(btn => btn.addEventListener("click", e => {
+    e.stopPropagation();
+    const c = MAP_CONTROLS.find(x => x.id === btn.dataset.ctrl);
+    if (!c) return;
+    if (c.type === "toggle") { openControlId = null; c.onToggle(); return; }
+    openControlId = openControlId === c.id ? null : c.id;   // second tap closes
+    renderMapControls();
+  }));
+
+  rail.querySelectorAll(".mc-bubble").forEach(btn => btn.addEventListener("click", e => {
+    e.stopPropagation();
+    const c = MAP_CONTROLS.find(x => x.id === btn.dataset.ctrl);
+    if (!c) return;
+    openControlId = null;
+    c.onSelect(c.options[+btn.dataset.i]);
+  }));
+}
+
+function closeMapControls() {
+  if (!openControlId) return;
+  openControlId = null;
+  renderMapControls();
+}
+document.addEventListener("click", closeMapControls);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeMapControls(); });
+
+// Rebuilt on every render so the street-work rows appear/disappear with the layer
+function renderMapLegend() {
+  const mapEl = document.getElementById("map");
+  if (!mapEl) return;
+  document.getElementById("map-legend")?.remove();
+
+  const legend = document.createElement("div");
+  legend.id = "map-legend";
+  legend.innerHTML = `<div class="leg-title">Status</div>` +
+    MAP_LEGEND_ITEMS.map(item =>
+      `<div class="leg-row">
+        <div class="leg-dot" style="background:${MAP_COLORS[item.key]}"></div>
+        <span>${item.label}</span>
+      </div>`
+    ).join("") +
+    (streetWorkLayerOn ? `
+      <div class="leg-row"><div class="leg-dot" style="background:#f97316"></div><span>Active closure</span></div>
+      <div class="leg-row"><div class="leg-dot" style="background:#a78bfa"></div><span>Upcoming closure</span></div>` : "") +
+    `<div class="leg-row leg-note"><span>dot size = homes added · cluster ring = status mix, center = homes added</span></div>`;
+  mapEl.appendChild(legend);
 }
 
 function renderMap(permits) {
@@ -2058,54 +2209,11 @@ function renderMap(permits) {
       maxZoom: 19
     }).addTo(map);
 
-    // Inject legend into map container (not as a Leaflet control so it's always visible)
-    const legend = document.createElement("div");
-    legend.id = "map-legend";
-    legend.innerHTML = `<div class="leg-title">Status</div>` +
-      MAP_LEGEND_ITEMS.map(item =>
-        `<div class="leg-row">
-          <div class="leg-dot" style="background:${MAP_COLORS[item.key]}"></div>
-          <span>${item.label}</span>
-        </div>`
-      ).join("") +
-      `<div class="leg-row leg-note"><span>dot size = homes added · cluster ring = status mix, center = homes added</span></div>`;
-    document.getElementById("map").appendChild(legend);
   }
 
   // Rebuild recent-updates control (remove + recreate so button active state stays in sync)
-  const prevCtrl = document.getElementById("map-recent-ctrl");
-  if (prevCtrl) prevCtrl.remove();
-  const recentCtrl = document.createElement("div");
-  recentCtrl.id = "map-recent-ctrl";
-  recentCtrl.innerHTML = `<div class="leg-title">Recent Updates</div>
-    <div style="display:flex;gap:4px;margin-top:6px">
-      ${[{n:0,label:"All"},{n:10,label:"Top 10"},{n:20,label:"Top 20"},{n:50,label:"Top 50"}].map(({n,label}) => {
-        const active = n === 0 ? !recentMode : (recentMode && recentCount === n);
-        return `<button class="recent-btn${active?" active":""}" data-n="${n}">${label}</button>`;
-      }).join("")}
-    </div>` +
-    // SDOT Street Use is Seattle-only, so the overlay is offered for Seattle only
-    (currentCity === "bellevue" ? "" : `
-    <div class="leg-title" style="margin-top:10px">Street Work</div>
-    <div style="display:flex;gap:4px;margin-top:6px">
-      <button class="recent-btn${streetWorkLayerOn ? " active" : ""}" id="map-streetwork-btn">${streetWorkLayerOn ? "On" : "Show citywide"}</button>
-    </div>
-    ${streetWorkLayerOn ? `<div class="leg-row" style="margin-top:6px">
-      <div class="leg-dot" style="background:#f97316"></div><span>Active closure</span>
-    </div>
-    <div class="leg-row">
-      <div class="leg-dot" style="background:#a78bfa"></div><span>Upcoming closure</span>
-    </div>` : ""}`);
-  document.getElementById("map").appendChild(recentCtrl);
-  recentCtrl.querySelectorAll(".recent-btn[data-n]").forEach(btn => {
-    btn.addEventListener("click", function () {
-      const n = parseInt(this.dataset.n);
-      recentMode  = n > 0;
-      if (n > 0) recentCount = n;
-      renderMap(getFilteredList());
-    });
-  });
-  recentCtrl.querySelector("#map-streetwork-btn")?.addEventListener("click", toggleStreetWorkLayer);
+  renderMapControls();
+  renderMapLegend();
 
   // Markers live in a cluster group (falls back to plain markers if the plugin failed to load)
   const useCluster = typeof L.markerClusterGroup === "function";
