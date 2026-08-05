@@ -1050,8 +1050,13 @@ const API = "https://data.seattle.gov/resource/76t5-zqzr.json";
 const APP_TOKEN = "8TWYR3dr4BMUJcfxCbdwGw7pv";
 
 // ── HTML escape (API data → innerHTML) ───────────────────────────────────────
+// Both quote styles are escaped on purpose. Every interpolated attribute in this file is
+// double-quoted today, so &quot; alone would be enough — but that's a convention, not a
+// guarantee, and a single-quoted attribute or an inline handler added later would silently
+// reopen XSS on permit descriptions. Escaping ' too makes the output safe in any attribute.
 function esc(str) {
-  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+                          .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 
 // Only allow http(s) URLs from API data — blocks javascript:/data: schemes

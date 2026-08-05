@@ -41,10 +41,14 @@ new_block = (
 with open(html_path) as f:
     html = f.read()
 
+# The index is emitted as a single line, so `.*` (which stops at the newline) spans it
+# exactly. Matching on "no semicolons" instead would break the moment one appears in an
+# address — the pattern couldn't cross it, the run would abort, and the weekly refresh
+# would stay broken until someone hand-edited the file.
 html, n = re.subn(
     r'// ── SeattleInProgress index \(pre-fetched [^)]+\) ──\n'
     r'(?:const SIP_FETCHED = "[^"]*";\n)?'
-    r'const SIP_INDEX = \{[^;]+\};',
+    r'const SIP_INDEX = \{.*\};',
     lambda m: new_block,
     html,
 )

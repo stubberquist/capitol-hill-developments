@@ -30,13 +30,24 @@ curl -sf -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/
   --data-urlencode "f=json" > "$TMP/bellevue.json"
 
 python3 - "$SCRIPT_DIR" "$SINCE" "$TODAY" "$TMP/seattle.json" "$TMP/bellevue.json" << 'PYEOF'
-import sys, json, html
+import sys, re, json, html
 from datetime import datetime, timezone
 from urllib.parse import quote
 from xml.sax.saxutils import escape as xesc
 
 out_dir, since, today, sea_path, bel_path = sys.argv[1:6]
 SITE = "https://stubberquist.github.io/capitol-hill-developments"
+
+# XML 1.0 forbids most control characters outright — there is no escape sequence that makes
+# them legal, so one stray byte in a permit description renders the whole feed unparseable
+# and every reader drops it. Strip them; they carry no meaning in this text. Everything
+# outside the permitted set goes, including lone surrogates.
+XML_ILLEGAL = re.compile(
+    "[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]")
+
+def xclean(s):
+    """Escape for XML text content, after dropping characters XML can't represent."""
+    return xesc(XML_ILLEGAL.sub("", str(s)))
 
 def fmt_money(v):
     v = float(v or 0)
@@ -136,11 +147,11 @@ def item_title(i):
 
 feed_items = "".join(f"""
   <item>
-    <title>{xesc(item_title(i))}</title>
-    <link>{xesc(i['url'])}</link>
-    <guid isPermaLink="false">{xesc(i['num'])}</guid>
+    <title>{xclean(item_title(i))}</title>
+    <link>{xclean(i['url'])}</link>
+    <guid isPermaLink="false">{xclean(i['num'])}</guid>
     <pubDate>{rfc822(i['date'])}</pubDate>
-    <description>{xesc(i['desc'][:400])}</description>
+    <description>{xclean(i['desc'][:400])}</description>
   </item>""" for i in items)
 
 feed = f"""<?xml version="1.0" encoding="UTF-8"?>

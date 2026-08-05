@@ -20,7 +20,9 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a SHA, not the mutable v4 tag: this job holds contents:write and pushes
+      # straight to the live site, so a retagged v4 would run unreviewed code with that token.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Fetch and embed SIP index
         run: bash refresh-sip-index.sh
