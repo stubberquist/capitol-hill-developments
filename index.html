@@ -1153,6 +1153,9 @@ let recentMode  = false;
 let recentCount = 20;
 let streetWorkLayer   = null;   // Leaflet LayerGroup for the citywide SDOT overlay
 let streetWorkLayerOn = false;
+let zoningLayer   = null;       // Leaflet LayerGroup for the zoning overlay
+let zoningLayerOn = false;
+let zoningLoading = false;
 
 // ── Watchlist & visit tracking (localStorage) ─────────────────────────────────
 function loadJSON(key, fallback) {
@@ -1614,7 +1617,101 @@ async function fetchStreetWorkGeo() {
 }
 
 // ── MHA (Mandatory Housing Affordability) detection ───────────────────────────
+// ── Zoning (Seattle DPD.ZONING_PV via the City's ArcGIS) ─────────────────────
+// Same host the SDOT street-use layer already comes from, so no CSP change was needed.
+// The table is fetched as two different slices, because two features need very different
+// amounts of it:
+//   - the MHA slice (MHA='N', 810 polygons, one page, ~66 KB gzipped) loads alongside the
+//     permits, because the MHA badge is on every card and has to be right on first paint
+//   - the full table (3,627 polygons, two pages, ~154 KB gzipped) loads only when the map
+//     layer is switched on, since nothing else needs every zone's code and colour
+const ZONING_URL = "https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services" +
+  "/Current_Land_Use_Zoning_Detail_2/FeatureServer/0/query";
+// ~11m. Finer than the ~22m used for neighborhoods on purpose: zoning follows parcel lines,
+// and at 22m narrow downtown blocks start collapsing into each other.
+const ZONING_OFFSET = "0.0001";
+
+let nonMhaZones = null;   // indexed MHA='N' polygons; null until loaded, [] if the fetch failed
+let zoningGeo   = null;   // raw full-table features, cached for the session once fetched
+
+// Ray-casting point-in-polygon over an Esri ring set. This deliberately differs from
+// pointInNeighborhood: those are disjoint areas where a hit in any one ring is a match,
+// but zoning polygons contain real holes (30 of them citywide) wound opposite to their
+// outer ring. Accumulating the crossing count across every ring is what makes a hole read
+// as outside — testing each ring on its own would report the hole as inside.
+function pointInRings(lat, lon, rings) {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+      if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+// Precompute each polygon's bounding box. Same trick as the neighborhood lookup: the bbox
+// rejects almost every candidate before any ring gets walked.
+function indexZones(features) {
+  const out = [];
+  for (const f of features) {
+    const rings = f.geometry?.rings;
+    if (!rings || !rings.length) continue;
+    let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    for (const ring of rings) {
+      for (const [x, y] of ring) {
+        if (y < minLat) minLat = y;
+        if (y > maxLat) maxLat = y;
+        if (x < minLon) minLon = x;
+        if (x > maxLon) maxLon = x;
+      }
+    }
+    out.push({ minLat, maxLat, minLon, maxLon, rings, attrs: f.attributes });
+  }
+  return out;
+}
+
+function zoneHit(zones, lat, lon) {
+  for (const z of zones) {
+    if (lat < z.minLat || lat > z.maxLat || lon < z.minLon || lon > z.maxLon) continue;
+    if (pointInRings(lat, lon, z.rings)) return z;
+  }
+  return null;
+}
+
+async function fetchNonMhaZones() {
+  try {
+    const features = await arcFetchAll({
+      where: "MHA='N'", outFields: "ZONING", outSR: "4326", returnGeometry: "true",
+      resultRecordCount: "2000", maxAllowableOffset: ZONING_OFFSET, f: "json",
+    }, 2, ZONING_URL, "Seattle zoning");
+    nonMhaZones = indexZones(features);
+  } catch (err) {
+    // Non-fatal: MHA just falls back to the description/status heuristic it used before.
+    console.warn("zoning (MHA slice) failed:", err.message);
+    nonMhaZones = [];
+  }
+}
+
+// Whether MHA is in play at a permit's location: true / false, or null when unknown
+// (zoning not loaded, no coordinates, or Bellevue — MHA is a Seattle program).
+const mhaAppliesCache = new WeakMap();
+function mhaApplies(p) {
+  if (!nonMhaZones || !nonMhaZones.length || p._city === "bellevue") return null;
+  if (mhaAppliesCache.has(p)) return mhaAppliesCache.get(p);
+  const lat = parseFloat(p.latitude), lon = parseFloat(p.longitude);
+  // Absence of a hit means the point is not in a non-MHA zone, so MHA applies. A point
+  // outside every polygon (water, or just off the city edge) stays unknown rather than
+  // being claimed as MHA — hence the explicit coordinate check.
+  const applies = (lat && lon) ? !zoneHit(nonMhaZones, lat, lon) : null;
+  mhaAppliesCache.set(p, applies);
+  return applies;
+}
+
 const MHA = {
+  "not-subject":  { label: "MHA N/A",            color: "#94a3b8", bg: "rgba(100,116,139,0.12)" },
   paid:           { label: "MHA Paid",           color: "#34d399", bg: "rgba(52,211,153,0.15)" },
   performance:    { label: "MHA Performance",     color: "#63b3ed", bg: "rgba(99,179,237,0.15)" },
   exempt:         { label: "MHA Exempt",          color: "#94a3b8", bg: "rgba(100,116,139,0.12)" },
@@ -1627,12 +1724,23 @@ const MHA = {
 function getMHAStatus(p, sitePermits) {
   const texts = [p, ...sitePermits].map(x => (x.description || "").toLowerCase());
 
+  // Text first: it is direct evidence about this permit, so it outranks the zoning check
+  // below, which only knows about the location. Where they disagree — a description citing
+  // MHA on a site the zoning map says is exempt — the permit's own paperwork wins.
   for (const t of texts) {
     if (/mha.{0,40}exempt|exempt.{0,40}mha/.test(t))           return "exempt";
     if (/mha.{0,40}(paid|payment|fee paid)|payment.{0,40}mha/.test(t)) return "paid";
     if (/mha.{0,40}performance|performance.{0,40}mha/.test(t)) return "performance";
     if (/\bmha\b|mandatory housing affordability/.test(t))      return "noted";
   }
+
+  // No direct evidence, so everything past here is inference — and zoning can rule it out
+  // outright. MHA only ever attached to zones that took the upzone (the (M)/(M1)/(M2)
+  // suffixed ones), so in Neighborhood Residential or Industrial there is nothing to pay,
+  // perform or clear. Without this, the fallback below claimed "likely cleared" for every
+  // issued permit citywide, including the 336 NR and 215 Industrial zones where the
+  // program never applied — about 21% of permits carried an MHA badge they had not earned.
+  if (mhaApplies(p) === false) return "not-subject";
 
   // Heuristic: large permits require MHA clearance before permit issuance in Seattle
   const status = getStatus(p);
@@ -2148,6 +2256,89 @@ async function toggleStreetWorkLayer() {
   renderMap(getFilteredList());
 }
 
+// Ten CATEGORY_DESC values cover all 3,627 zones, which is small enough to read as a
+// legend. Residential density runs grey → light blue → blue, commercial amber → orange,
+// so the map shows intensity of allowed development at a glance rather than 285 zone codes.
+const ZONE_COLORS = {
+  "Neighborhood Residential":  "#94a3b8",
+  "Lowrise Multi-Family":      "#60a5fa",
+  "High-Density Multi-Family": "#2563eb",
+  "Neighborhood Commercial":   "#fbbf24",
+  "Commercial":                "#f97316",
+  "Seattle Mixed":             "#a78bfa",
+  "Downtown":                  "#c084fc",
+  "Major Institutions":        "#34d399",
+  "Industrial":                "#64748b",
+  "Master Planned Community":  "#f472b6",
+};
+const ZONE_FALLBACK = "#64748b";
+
+async function fetchZoningGeo() {
+  if (zoningGeo) return;
+  zoningLoading = true;
+  try {
+    zoningGeo = await arcFetchAll({
+      where: "1=1", outFields: "ZONING,ZONING_DESC,CATEGORY_DESC,MHA,MHA_VALUE",
+      outSR: "4326", returnGeometry: "true", resultRecordCount: "2000",
+      maxAllowableOffset: ZONING_OFFSET, f: "json",
+    }, 4, ZONING_URL, "Seattle zoning");
+  } catch (err) {
+    console.warn("zoning layer failed:", err.message);
+    zoningGeo = null;
+  } finally {
+    zoningLoading = false;
+  }
+}
+
+function drawZoningLayer() {
+  if (!map || !zoningGeo) return;
+  if (zoningLayer) { zoningLayer.remove(); zoningLayer = null; }
+  // 3,627 polygons is well past what Leaflet's default SVG renderer stays smooth with —
+  // one <path> element each stalls panning, badly so on mobile. One shared canvas keeps it
+  // fluid. Scoped to this layer so the permit markers keep their own renderer.
+  const renderer = L.canvas({ padding: 0.3 });
+  const shapes = [];
+  for (const f of zoningGeo) {
+    const rings = f.geometry?.rings;
+    if (!rings || !rings.length) continue;
+    const a = f.attributes;
+    const color = ZONE_COLORS[a.CATEGORY_DESC] || ZONE_FALLBACK;
+    // Esri orders rings outer-first with holes after it, which is exactly what L.polygon
+    // expects, so the ring array passes straight through once the pairs are flipped.
+    const poly = L.polygon(rings.map(r => r.map(([lon, lat]) => [lat, lon])), {
+      renderer, color, weight: 1, opacity: 0.45, fillColor: color, fillOpacity: 0.22,
+    });
+    const mhaNote = a.MHA === "Y"
+      ? `MHA applies${a.MHA_VALUE ? ` · tier ${esc(a.MHA_VALUE)}` : ""}`
+      : "MHA does not apply";
+    poly.bindPopup(`
+      <div style="padding:10px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+        <div style="font-weight:700;font-size:14px;margin-bottom:2px">${esc(a.ZONING || "—")}</div>
+        <div style="font-size:12px;margin-bottom:4px">${esc(a.ZONING_DESC || a.CATEGORY_DESC || "")}</div>
+        <div style="font-size:11px;opacity:0.7">${mhaNote}</div>
+      </div>`);
+    shapes.push(poly);
+  }
+  zoningLayer = L.layerGroup(shapes).addTo(map);
+  // Under the permit pins and under the street-work lines, so it reads as a base wash
+  zoningLayer.eachLayer(l => l.bringToBack?.());
+}
+
+async function toggleZoningLayer() {
+  zoningLayerOn = !zoningLayerOn;
+  if (!zoningLayerOn) {
+    if (zoningLayer) { zoningLayer.remove(); zoningLayer = null; }
+    renderMap(getFilteredList());
+    return;
+  }
+  const pending = fetchZoningGeo();   // flips zoningLoading synchronously → busy icon
+  renderMapControls();
+  await pending;
+  if (!zoningLayerOn) return;         // toggled back off while loading
+  drawZoningLayer();
+  renderMap(getFilteredList());
+}
+
 // ── Map control rail ──────────────────────────────────────────────────────────
 // To add a control, append one entry. Two kinds:
 //   "options" — clicking the icon pops the choices out to the left as bubbles
@@ -2181,6 +2372,18 @@ const MAP_CONTROLS = [
     isActive: () => streetWorkLayerOn,
     isBusy:   () => streetWorkLoading,
     onToggle: toggleStreetWorkLayer,
+  },
+  {
+    id: "zoning",
+    icon: "▦",
+    title: "Zoning",
+    type: "toggle",
+    // Bellevue publishes its own zoning layer with a different schema and no MHA concept;
+    // hidden here rather than half-supported, same as the SDOT control above.
+    hidden:   () => currentCity === "bellevue",
+    isActive: () => zoningLayerOn,
+    isBusy:   () => zoningLoading,
+    onToggle: toggleZoningLayer,
   },
 ];
 
@@ -2255,6 +2458,12 @@ function renderMapLegend() {
     (streetWorkLayerOn ? `
       <div class="leg-row"><div class="leg-dot" style="background:#f97316"></div><span>Active closure</span></div>
       <div class="leg-row"><div class="leg-dot" style="background:#a78bfa"></div><span>Upcoming closure</span></div>` : "") +
+    (zoningLayerOn ? `<div class="leg-title" style="margin-top:8px">Zoning</div>` +
+      Object.entries(ZONE_COLORS).map(([label, color]) =>
+        `<div class="leg-row">
+          <div class="leg-dot" style="background:${color}"></div>
+          <span>${esc(label)}</span>
+        </div>`).join("") : "") +
     `<div class="leg-row leg-note"><span>dot size = homes added · cluster ring = status mix, center = homes added</span></div>`;
   mapEl.appendChild(legend);
 }
@@ -3057,6 +3266,10 @@ async function init() {
     [allPermits] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
       currentCity === "bellevue" ? Promise.resolve() : fetchStreetActivity(),
+      // In parallel, so the MHA badge is authoritative on first paint rather than
+      // correcting itself a moment later. It rides alongside a permit fetch ~10x its
+      // size, so it costs no perceptible time.
+      currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
     ]);
     computeWatchChanges();
     applyFilters();
@@ -3123,15 +3336,21 @@ document.getElementById("filter-city").addEventListener("change", async function
 
   // Reset map so it re-initializes at the right city center next render
   if (map) { map.remove(); map = null; markers = []; clusterGroup = null; tileLayer = null; }
-  // The overlay belonged to the destroyed map instance; drop it (cached data is kept)
+  // The overlays belonged to the destroyed map instance; drop them (cached data is kept)
   streetWorkLayer = null;
   streetWorkLayerOn = false;
+  zoningLayer = null;
+  zoningLayerOn = false;
   openControlId = null;   // else a popout survives the teardown and reopens on the next render
 
   try {
     [allPermits] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
       currentCity === "bellevue" ? Promise.resolve() : fetchStreetActivity(),
+      // In parallel, so the MHA badge is authoritative on first paint rather than
+      // correcting itself a moment later. It rides alongside a permit fetch ~10x its
+      // size, so it costs no perceptible time.
+      currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
     ]);
     computeWatchChanges();
     applyFilters();
