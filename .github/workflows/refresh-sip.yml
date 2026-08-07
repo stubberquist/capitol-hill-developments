@@ -30,6 +30,12 @@ jobs:
       - name: Fetch and embed market data (Zillow + FRED)
         run: bash refresh-market-data.sh
 
+      # Recomputed rather than pinned, so the index self-corrects as Council adopts pieces
+      # of the rezone: an ordinance that passes lands in the live zoning layer, and those
+      # polygons drop out of "pending" on the next Monday without anyone touching the code.
+      - name: Recompute pending-rezone index
+        run: bash refresh-rezone-index.sh
+
       - name: Build weekly digest (whats-new.html + feed.xml)
         run: bash build-whats-new.sh
 
