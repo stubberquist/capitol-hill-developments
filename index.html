@@ -381,6 +381,7 @@
     .street-line .muted { color: var(--muted); font-weight: 400; }
     .street-line.upcoming { color: var(--accent2); }
     .badge.pending   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .badge.expired   { background: rgba(251,146,60,0.15);  color: #fb923c; }
     .badge.cancelled { background: rgba(248,113,113,0.12); color: var(--red); }
     .badge.other     { background: rgba(100,116,139,0.15); color: var(--muted); }
 
@@ -514,6 +515,22 @@
       border-radius: 20px;
       align-self: flex-start;
       margin-top: 2px;
+    }
+
+    /* Solid, unlike the dashed rezone badge: a lapsed expiry date is a recorded fact about
+       this permit, not a proposal. Orange ties it to the Expired status colour. */
+    .lapsed-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 20px;
+      align-self: flex-start;
+      margin-top: 2px;
+      color: #fb923c;
+      background: rgba(251,146,60,0.14);
+      cursor: help;
     }
 
     /* Dashed, unlike the solid MHA badge next to it: this describes proposed legislation,
@@ -988,6 +1005,7 @@
       <label class="ms-option"><input type="checkbox" value="complete"> Completed</label>
       <label class="ms-option"><input type="checkbox" value="review"> In Review</label>
       <label class="ms-option"><input type="checkbox" value="pending"> Pending / Applied</label>
+      <label class="ms-option"><input type="checkbox" value="expired"> Expired</label>
       <label class="ms-option"><input type="checkbox" value="cancelled"> Cancelled</label>
     </div>
   </div>
@@ -1042,6 +1060,7 @@
   <div class="view-toggle">
     <button id="btn-watched" title="Show only starred projects">★ Watched</button>
     <button id="btn-streetwork" title="Show only projects with active or upcoming street closures">⚠ Street Work</button>
+    <button id="btn-stalled" title="Show only projects whose permit was issued, has passed its expiry date, and was never completed">◷ Stalled</button>
     <button id="btn-grid" class="active">⊞ Cards</button>
     <button id="btn-map">⊕ Map</button>
     <button id="btn-analytics">∿ Analytics</button>
@@ -1225,6 +1244,7 @@ function saveJSON(key, value) {
 
 let watchedOnly = false;
 let streetWorkOnly = false;
+let stalledOnly    = false;
 const watchlist = new Set(loadJSON("chd-watchlist", []));
 const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); } catch { return null; } })();
 const watchStatusPrev = loadJSON("chd-watch-status", {});
@@ -1249,16 +1269,26 @@ function toggleStreetWorkFilter() {
   applyFilters();
 }
 
-// SDOT Street Use data is Seattle-only, so the toggle is meaningless (and would return zero
-// results) for Bellevue — hide it there, clearing the filter first so it can't strand the view.
-function syncStreetWorkButton() {
-  const btn = document.getElementById("btn-streetwork");
+function toggleStalledFilter() {
+  stalledOnly = !stalledOnly;
+  document.getElementById("btn-stalled").classList.toggle("active", stalledOnly);
+  applyFilters();
+}
+
+// Both toggles depend on Seattle-only data — SDOT for street work, SDCI's expiry date for
+// stalled — so they're meaningless (and would return zero results) for Bellevue. Hidden
+// there, and the filter is cleared first so it can't strand the view on an empty list.
+function syncCityOnlyButtons() {
   const supported = currentCity !== "bellevue";
-  if (!supported && streetWorkOnly) {
-    streetWorkOnly = false;
-    btn.classList.remove("active");
+  for (const [id, get, clear] of [
+    ["btn-streetwork", () => streetWorkOnly, () => { streetWorkOnly = false; }],
+    ["btn-stalled",    () => stalledOnly,    () => { stalledOnly = false; }],
+  ]) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    if (!supported && get()) { clear(); btn.classList.remove("active"); }
+    btn.hidden = !supported;
   }
-  btn.hidden = !supported;
 }
 
 // ISO strings compare lexically, so string > string works for "is after"
@@ -1524,6 +1554,27 @@ function sitePermitsFor(p) {
   return addressIndex.get(normalizeAddr(p)) || [];
 }
 
+// ── Dates in Seattle's timezone ───────────────────────────────────────────────
+// toISOString() is UTC, so from 5pm Pacific onward it reports tomorrow's date. Every
+// date boundary in this file is about Seattle — when a street closure ends, when a
+// permit expires — so they all have to be computed in Seattle's zone. Getting this
+// wrong dropped closures that were still in force: the SDOT window queried for
+// tomorrow after 5pm and lost every permit ending today.
+const SEATTLE_TZ = "America/Los_Angeles";
+const seattleDayFmt = new Intl.DateTimeFormat("en-CA", {
+  timeZone: SEATTLE_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+});
+// "2026-08-10" for a given instant (or now), as it reads on a Seattle calendar
+function seattleDay(d = new Date()) {
+  return seattleDayFmt.format(d);
+}
+// Midnight-tonight in Seattle as an epoch ms, for "is this date in the past" tests.
+// Parsing the day string back as UTC is deliberate: the SDCI date fields carry no
+// zone, so comparing them as plain calendar days is the only apples-to-apples test.
+function seattleTodayMs() {
+  return Date.parse(seattleDay() + "T00:00:00Z");
+}
+
 // ── Street activity (SDOT Street Use permits) ──────────────────────────────────
 // Address -> { text, endMs } for the currently-active right-of-way permit with the
 // biggest pedestrian/traffic impact at that address (sidewalk closure, staging, etc.)
@@ -1578,9 +1629,9 @@ async function fetchStreetActivity() {
   STREET_ACTIVITY = {};
   STREET_UPCOMING = {};
   const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
+  const todayStr = seattleDay(today);
   const horizon = new Date(today.getTime() + STREET_UPCOMING_WINDOW_DAYS * 86400000);
-  const horizonStr = horizon.toISOString().slice(0, 10);
+  const horizonStr = seattleDay(horizon);
   const nowMs = today.getTime();
   // Window covers both currently-active permits and ones scheduled to start within
   // the upcoming horizon — bucketed client-side by comparing USE_START_DATE to now.
@@ -1646,25 +1697,93 @@ function hasStreetWork(p) {
 let streetWorkGeo = null;      // cached feature array, null until first load
 let streetWorkLoading = false;
 
+// The point layer behind the same permits. Used only to sanity-check where the segments
+// below claim to be — see dropMisplacedSegments.
+const STREET_USE_POINT_URL = "https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/SU_Permit_Data_Model_Relationships/FeatureServer/0/query";
+
+// SDOT's linear referencing resolves a permit's street description to the wrong quadrant
+// often enough to matter: "626 N 64TH ST" gets plotted on S TAFT ST, 20 km away, because
+// the base street name matches and the N/S differs. Measured citywide, 2.7% of permits
+// land 300m+ from their own permit point.
+//
+// 300m is the wrong cutoff though — most of that band is legitimate. A permit at
+// 3800 MONTLAKE BLVD NE with impacts running along MONTLAKE BLVD NE sits 350m from its
+// point because the block face is long, not because anything is wrong. The genuine
+// quadrant collisions are all >= 1km, which in today's layer is 4 permits of 338 (1.2%).
+const SEGMENT_MAX_DRIFT_M = 1000;
+
+function metersBetween(aLat, aLon, bLat, bLon) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (bLat - aLat) * rad, dLon = (bLon - aLon) * rad;
+  const h = Math.sin(dLat / 2) ** 2 +
+            Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Drops segments whose centroid is implausibly far from their permit's own point. Failing
+// open is deliberate: if the point lookup errors or a permit has no point, the segment is
+// kept. A missing sanity check should never blank the layer.
+async function dropMisplacedSegments(features) {
+  const nums = [...new Set(features.map(f => f.attributes?.PERMIT_NUMBER).filter(Boolean))];
+  if (!nums.length) return features;
+  const points = new Map();
+  try {
+    for (let i = 0; i < nums.length; i += 300) {
+      const list = nums.slice(i, i + 300).map(n => `'${String(n).replace(/'/g, "''")}'`).join(",");
+      const res = await fetch(STREET_USE_POINT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          where: `PERMIT_NUMBER IN (${list})`, outFields: "PERMIT_NUMBER",
+          returnGeometry: "true", outSR: "4326", resultRecordCount: "2000", f: "json",
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message || "point query failed");
+      for (const f of data.features || []) {
+        if (f.geometry?.x != null) points.set(f.attributes.PERMIT_NUMBER, [f.geometry.y, f.geometry.x]);
+      }
+    }
+  } catch (e) {
+    console.warn("Street work point cross-check skipped:", e.message);
+    return features;
+  }
+  let dropped = 0;
+  const kept = features.filter(f => {
+    const pt = points.get(f.attributes?.PERMIT_NUMBER);
+    const paths = f.geometry?.paths;
+    if (!pt || !paths?.length) return true;
+    const all = paths.flat();
+    const cx = all.reduce((s, p) => s + p[0], 0) / all.length;
+    const cy = all.reduce((s, p) => s + p[1], 0) / all.length;
+    if (metersBetween(pt[0], pt[1], cy, cx) < SEGMENT_MAX_DRIFT_M) return true;
+    dropped++;
+    return false;
+  });
+  if (dropped) console.info(`Street work: dropped ${dropped} segment(s) misplaced >=${SEGMENT_MAX_DRIFT_M}m from their permit point`);
+  return kept;
+}
+
 async function fetchStreetWorkGeo() {
   if (streetWorkGeo || streetWorkLoading) return streetWorkGeo;
   streetWorkLoading = true;
   const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const horizonStr = new Date(today.getTime() + STREET_UPCOMING_WINDOW_DAYS * 86400000)
-    .toISOString().slice(0, 10);
+  const todayStr = seattleDay(today);
+  const horizonStr = seattleDay(new Date(today.getTime() + STREET_UPCOMING_WINDOW_DAYS * 86400000));
   const where = `PERMIT_TYPE_ALIAS IN ('Construction and Storage Containers','ROW Construction Permit','Shoring') ` +
     `AND PERMIT_STATUS='Issued' AND USE_START_DATE <= TIMESTAMP '${horizonStr} 23:59:59' AND USE_END_DATE >= TIMESTAMP '${todayStr} 00:00:00'`;
   try {
-    streetWorkGeo = await arcFetchAll({
+    const raw = await arcFetchAll({
       where,
-      outFields: ["ADDRESS", "USE_TYPE", ...STREET_USE_FACILITIES.map(f => f[0]),
+      outFields: ["PERMIT_NUMBER", "ADDRESS", "USE_TYPE", ...STREET_USE_FACILITIES.map(f => f[0]),
                   "USE_START_DATE", "USE_END_DATE"].join(","),
       returnGeometry: "true",
       outSR: "4326",
       resultRecordCount: "2000",
       f: "json",
     }, 5, STREET_USE_URL, "SDOT Street Use");
+    streetWorkGeo = await dropMisplacedSegments(raw);
   } catch (e) {
     console.warn("Street work layer fetch failed", e);
     streetWorkGeo = [];
@@ -1884,14 +2003,53 @@ function getStatus(p) {
       s.includes("correction") || s.includes("additional info")) return "review";
   if (s.includes("pending") || s.includes("application") || s.includes("submitted") ||
       s.includes("accepted") || s === "applied") return "pending";
-  if (s.includes("cancel") || s.includes("void") || s.includes("withdrawn") ||
-      s.includes("expired")) return "cancelled";
+  // Expired is deliberately NOT folded in with cancelled/withdrawn below. They mean
+  // different things: a withdrawn permit was actively abandoned by the applicant, an
+  // expired one was approved and allowed to lapse — often a stalled project rather than
+  // a dead one, and frequently revivable. Lumping them together mislabelled 596 permits
+  // carrying 8,542 homes, which was 41% of everything the app called "Cancelled".
+  if (s.includes("expired")) return "expired";
+  if (s.includes("cancel") || s.includes("void") || s.includes("withdrawn")) return "cancelled";
   return "other";
+}
+
+// A permit whose expiry has passed without completion. Distinct from status "expired":
+// these are permits SDCI still lists as Issued, so the app shows them as active
+// construction when the authorization underneath has actually lapsed — 28 of them, one
+// issued in 2016. Seattle only; Bellevue's feed carries no expiry date.
+function permitLapsed(p) {
+  if (p._city === "bellevue" || !p.expiresdate || p.completeddate) return null;
+  const t = Date.parse(p.expiresdate);
+  if (!Number.isFinite(t) || t >= seattleTodayMs()) return null;
+  // Two permits citywide carry an expiry that predates their own issue date — 800
+  // OCCIDENTAL AVE S is issued 2026-07-23 and expires 2026-06-04. That's a data-entry
+  // error rather than a lapse, and it surfaced on the first page of the stalled view, so
+  // it's worth the two lines to suppress.
+  if (p.issueddate) {
+    const iss = Date.parse(p.issueddate);
+    if (Number.isFinite(iss) && t <= iss) return null;
+  }
+  return t;
+}
+
+// "Stalled" is the union of both cases: issued, past expiry, never completed. It reads
+// across the status buckets on purpose — a stalled project can sit in either "expired"
+// or a stale "issued", and the question "what got approved and then died?" spans both.
+function isStalled(p) {
+  if (p._city === "bellevue" || !p.issueddate || p.completeddate) return false;
+  const st = getStatus(p);
+  if (st !== "issued" && st !== "expired") return false;
+  if (!p.expiresdate) return false;
+  const t = Date.parse(p.expiresdate);
+  if (!Number.isFinite(t) || t >= seattleTodayMs()) return false;
+  const iss = Date.parse(p.issueddate);          // same backwards-date guard as permitLapsed
+  return !Number.isFinite(iss) || t > iss;
 }
 
 function statusLabel(key) {
   return { issued:"In Progress", complete:"Completed", review:"In Review",
-           pending:"Applied / Pending", cancelled:"Cancelled", other:"Other" }[key] ?? key;
+           pending:"Applied / Pending", expired:"Expired", cancelled:"Cancelled",
+           other:"Other" }[key] ?? key;
 }
 
 function fmtValue(v) {
@@ -2068,6 +2226,11 @@ function renderGrid(permits) {
     // Pending upzone at this site (Seattle only — see fetchPendingRezones)
     const rezone  = rezoneFor(p);
 
+    // Only flag the lapse where the status doesn't already say so. On an "Expired" permit
+    // the badge above carries it; the case worth calling out is the permit SDCI still
+    // lists as Issued while its authorization has quietly run out.
+    const lapsedMs = getStatus(p) === "issued" ? permitLapsed(p) : null;
+
     // Street activity (Seattle-only — SDOT Street Use permits don't cover Bellevue)
     const streetAct      = streetActivityFor(p);
     const streetUpcoming = streetUpcomingFor(p);
@@ -2127,6 +2290,7 @@ function renderGrid(permits) {
         </div>` : ""}
         ${mha ? `<div class="mha-badge" style="background:${mha.bg};color:${mha.color}">${mha.label}</div>` : ""}
         ${rezone ? `<div class="rezone-badge" title="Proposed in the Centers and Corridors legislation transmitted to Council on 28 Jan 2026${rezone.where ? ` · ${esc(rezone.where)}` : ""}. Not yet adopted — may change before any vote.">Rezone proposed · ${rezone.from ? `${esc(rezone.from)} → ` : "→ "}${esc(rezone.to)}</div>` : ""}
+        ${lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : ""}
       </div>
 
       <div class="card-footer">
@@ -2270,6 +2434,7 @@ const MAP_COLORS = {
   complete:  "#34d399",  // green   — finaled / complete
   review:    "#6c8ef5",  // blue    — in design review
   pending:   "#a78bfa",  // purple  — applied / pending
+  expired:   "#fb923c",  // orange  — approved then allowed to lapse
   cancelled: "#f87171",  // red     — cancelled / void
   other:     "#64748b",  // grey    — unknown
 };
@@ -2279,6 +2444,7 @@ const MAP_LEGEND_ITEMS = [
   { key: "complete",  label: "Completed" },
   { key: "review",    label: "In Review" },
   { key: "pending",   label: "Pending / Applied" },
+  { key: "expired",   label: "Expired" },
   { key: "cancelled", label: "Cancelled" },
 ];
 
@@ -3391,6 +3557,7 @@ function getFilteredList() {
   return allPermits.filter(p => {
     if (watchedOnly && !watchlist.has(p.permitnum)) return false;
     if (streetWorkOnly && !hasStreetWork(p)) return false;
+    if (stalledOnly && !isStalled(p)) return false;
     if (!neighborhoodMatch(p, nbF)) return false;
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
@@ -3479,7 +3646,7 @@ async function init() {
     document.getElementById("scope-large").classList.add("active");
   }
   if (view && view !== "grid") setView(view);
-  syncStreetWorkButton();
+  syncCityOnlyButtons();
   try {
     [allPermits] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
@@ -3545,7 +3712,7 @@ document.getElementById("filter-city").addEventListener("change", async function
   historyLoaded = false;
   document.getElementById("filter-neighborhood").value = "";
   populateNeighborhoodDropdown();
-  syncStreetWorkButton();
+  syncCityOnlyButtons();
 
   const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
   document.getElementById("grid-view").innerHTML =
@@ -3598,6 +3765,7 @@ document.getElementById("filter-city").addEventListener("change", async function
 // in the HTML (see the CSP note at the top of the file).
 document.getElementById("btn-watched").addEventListener("click", toggleWatchedFilter);
 document.getElementById("btn-streetwork").addEventListener("click", toggleStreetWorkFilter);
+document.getElementById("btn-stalled").addEventListener("click", toggleStalledFilter);
 document.getElementById("btn-grid").addEventListener("click", () => setView("grid"));
 document.getElementById("btn-map").addEventListener("click", () => setView("map"));
 document.getElementById("btn-analytics").addEventListener("click", () => setView("analytics"));

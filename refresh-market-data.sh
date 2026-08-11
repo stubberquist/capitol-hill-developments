@@ -103,7 +103,13 @@ with open(html_path) as f:
     html = f.read()
 
 html, n = re.subn(
-    r'// ── Market data \(Zillow ZORI/ZHVI[^)]*\) ──\nconst MARKET_DATA = \{[^;]+\};',
+    # `.*` rather than `[^;]+`: the constant is emitted as one line, so `.*` spans it
+    # exactly and stops at the newline. The old "anything but a semicolon" form was the
+    # same shape that broke refresh-sip-index.sh once an address contained one. Market
+    # data is only numbers and ISO months so it could not actually break here — this is
+    # for consistency, so the next reader doesn't have to work out why one script was
+    # safe and the other wasn't.
+    r'// ── Market data \(Zillow ZORI/ZHVI[^)]*\) ──\nconst MARKET_DATA = \{.*\};',
     lambda m: new_comment + "\n" + new_const,
     html,
 )
