@@ -735,6 +735,67 @@
       border: 1.5px solid #fff; opacity: 0.92; cursor: pointer;
       box-shadow: 0 1px 3px rgba(0,0,0,0.35);
     }
+    /* Multi-permit sites carry a small count. Positioned outside the dot rather than
+       inside it: the dot's diameter encodes project size and can be as small as 12px,
+       which is far too small to hold a legible number.
+       Deliberately NOT setting position on .chd-pin. Leaflet's own
+       ".leaflet-marker-icon { position: absolute }" has identical specificity and this
+       stylesheet loads after Leaflet's, so a `position: relative` here silently wins and
+       breaks how every marker is placed — Leaflet positions markers with a transform on
+       an absolutely-positioned element, so making it relative offsets all of them by
+       their static flow position and the pins vanish off-screen. The absolute badge below
+       already resolves against the icon, because Leaflet has positioned it for us. */
+    .chd-pin .pin-count {
+      position: absolute;
+      top: -6px; right: -8px;
+      min-width: 14px; height: 14px; padding: 0 3px;
+      border-radius: 7px;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border);
+      font-size: 9px; font-weight: 700; font-style: normal; line-height: 12px;
+      text-align: center;
+      pointer-events: none;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.35);
+    }
+
+    /* Pager across the permits at one site. Sits above the popup body, styled like the
+       card meta rows so the popup still reads as a card. */
+    .site-nav {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      margin: -4px 0 10px; padding-bottom: 8px;
+      /* Clears Leaflet's own close button, which floats at the popup's top-right. Without
+         it the "next" arrow lands within a few pixels of the ✕ — and paging through a
+         38-permit site is exactly where an accidental close hurts most. Same 24px the
+         card header already reserves. */
+      padding-right: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .site-nav-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .site-nav-btn {
+      width: 24px; height: 24px; flex-shrink: 0;
+      border-radius: 6px; cursor: pointer;
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      font-size: 14px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .site-nav-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Shown only while viewing a permit the active filter excluded, so it's clear why a
+       "Completed" permit is on screen under an "In Progress" filter. */
+    .site-filter-note {
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted);
+      background: var(--surface2);
+      border-radius: 6px;
+      padding: 5px 8px;
+      margin-bottom: 10px;
+    }
+
     .chd-cluster { background: none; border: none; }
     .chd-cluster .cc-ring {
       border-radius: 50%; display: flex; align-items: center; justify-content: center;
@@ -2499,6 +2560,106 @@ function clusterIconCreate(cluster) {
   });
 }
 
+// ── Map popups ────────────────────────────────────────────────────────────────
+// The body of a single permit's popup. Reuses the card CSS classes, so it stays in
+// sync with grid view automatically. Split out of the marker loop because a site pin
+// can hold many permits and has to render any one of them on demand.
+function permitPopupBody(p) {
+  const status  = getStatus(p);
+  const use     = getBuildingUse(p);
+  const units   = extractUnits(p);
+  const num     = esc(p.permitnum || "—");
+  const addr    = esc(p.originaladdress1 || "Address unknown");
+  const desc    = esc((p.description || "No description provided.").slice(0, 200));
+  const ptLabel = getPermitTypeLabel(p);
+  const rawAddr = p.originaladdress1 || "Address unknown";
+  const rawNum  = p.permitnum || "—";
+  const detailUrl = esc(safeUrl(p.link?.url) ||
+    (p._city === "bellevue"
+      ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(rawNum)}/BELLEVUE`
+      : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(rawNum)}`));
+  const cityStr = p._city === "bellevue" ? "Bellevue, WA" : "Seattle, WA";
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
+  const sipId  = SIP_INDEX[normalizeAddr(p)];
+  const sipUrl = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
+  const mupUrl = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
+  const lapsedMs = status === "issued" ? permitLapsed(p) : null;
+
+  return `
+      <div class="card-header" style="margin-bottom:8px;padding-right:24px">
+        <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
+        <span class="badge ${status}">${statusLabel(status)}</span>
+      </div>
+      <div class="card-address" style="margin-bottom:6px">${addr}</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
+        ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work">Site Work</span>` : ""}
+        <span class="use-tag ${use}">${useLabel(use)}</span>
+        ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
+        ${lapsedMs ? `<span class="lapsed-badge" style="margin-top:0">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</span>` : ""}
+      </div>
+      <div class="card-desc" style="margin-bottom:10px">${desc}</div>
+      <div class="card-meta" style="margin-bottom:10px">
+        <div class="meta-item"><span class="meta-key">Est. Value</span><span class="meta-val" style="color:var(--accent);font-weight:700">${fmtValue(p.estprojectcost)}</span></div>
+        <div class="meta-item"><span class="meta-key">Applied</span><span class="meta-val">${fmtDate(p.applieddate)}</span></div>
+        <div class="meta-item"><span class="meta-key">Issued</span><span class="meta-val">${fmtDate(p.issueddate)}</span></div>
+        ${recentMode ? `<div class="meta-item"><span class="meta-key" style="color:var(--accent)">Last Activity</span><span class="meta-val" style="color:var(--accent)">${fmtDate(lastActivityDate(p))}</span></div>` : ""}
+      </div>
+      <div class="card-links" style="border-top:1px solid var(--border);padding-top:8px">
+        <a class="card-link" href="${detailUrl}" target="_blank" rel="noopener">Permit Portal ↗</a>
+        ${mupUrl ? `<a class="card-link dr" href="${mupUrl}" target="_blank" rel="noopener">Design Review ↗</a>` : ""}
+        ${sipUrl ? `<a class="card-link sip" href="${sipUrl}" target="_blank" rel="noopener">View Renderings ↗</a>` : ""}
+        <a class="card-link maps" href="${mapsUrl}" target="_blank" rel="noopener">Google Maps ↗</a>
+      </div>`;
+}
+
+// A pin now stands for a site, so its popup has to reach every permit at that point.
+// Built as a live element rather than an HTML string: the prev/next controls re-render
+// in place, which keeps the map still instead of closing and reopening the popup.
+// Rebuilt on each open (bindPopup takes a function), so it always reflects current data.
+function buildSitePopup(site) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "padding:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
+
+  // Pages through every permit at the address, not just the ones the filter kept. Filtering
+  // to "In Progress" should narrow which sites appear on the map, not amputate a site's
+  // history once you're looking at it — the whole reason to click a pin is to find out what
+  // has happened here.
+  const list = site.all || site.permits;
+  const n = list.length;
+  const matched = site.matched || new Set(list.map(x => x.permitnum));
+  const hiddenCount = n - matched.size;
+  // Open on a permit that actually matched, since that's what the pin was drawn for.
+  let i = Math.max(0, list.findIndex(x => matched.has(x.permitnum)));
+
+  function render() {
+    const p = list[i];
+    const isMatch = matched.has(p.permitnum);
+    // Where one coordinate covers more than one street address — 3% of sites, usually a
+    // multi-entrance building like 300/318/370 Westlake Ave N — the header shows the
+    // representative address and each permit still shows its own below.
+    const nav = n > 1 ? `
+      <div class="site-nav">
+        <button class="site-nav-btn" data-d="-1" aria-label="Previous permit at this site">‹</button>
+        <span class="site-nav-label">${i + 1} of ${n} permits here</span>
+        <button class="site-nav-btn" data-d="1" aria-label="Next permit at this site">›</button>
+      </div>` : "";
+    // Only worth saying when the filter is actually hiding something at this address.
+    const note = (!isMatch && hiddenCount)
+      ? `<div class="site-filter-note">Outside your current filter · showing full site history</div>`
+      : "";
+    wrap.innerHTML = nav + note + permitPopupBody(p);
+    wrap.querySelectorAll(".site-nav-btn").forEach(b =>
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        i = (i + Number(b.dataset.d) + n) % n;   // wraps, so neither end is a dead stop
+        render();
+      }));
+  }
+  render();
+  return wrap;
+}
+
 // Draws the citywide SDOT overlay onto the existing map. Active closures use the same
 // orange as the card stripe, upcoming ones the same violet, so the map reads like the cards.
 function drawStreetWorkLayer() {
@@ -2906,80 +3067,79 @@ function renderMap(permits) {
     recentSet = new Set(dated.slice(0, recentCount).map(d => d[1]));
   }
 
+  // One pin per site, not per permit. 68% of permits share their exact coordinates with
+  // another permit — a single address legitimately accumulates many permits over time,
+  // which is what the Site History panel is for. Drawn per-permit those pins stacked
+  // invisibly: 48 of them landed on one pixel at 4800 Sand Point Way NE and only the
+  // topmost could ever be clicked. Grouping by coordinate takes 10,918 markers down to
+  // 5,886, drops the largest downtown cluster from 422 to 113, and leaves nothing
+  // unreachable.
+  // Every permit at each coordinate, filter or no filter. A pin is drawn only where the
+  // current filter matches, and its colour and size describe those matches — but the popup
+  // reads from this, so clicking a site under "In Progress" still shows the rest of that
+  // address's history rather than pretending the site is only what survived the filter.
+  const siteAll = new Map();
+  (allPermits || []).forEach(p => {
+    const lat = parseFloat(p.latitude);
+    const lon = parseFloat(p.longitude);
+    if (!lat || !lon) return;
+    const key = `${lat},${lon}`;
+    let arr = siteAll.get(key);
+    if (!arr) { arr = []; siteAll.set(key, arr); }
+    arr.push(p);
+  });
+
+  const sites = new Map();
   permits.forEach(p => {
     const lat = parseFloat(p.latitude);
     const lon = parseFloat(p.longitude);
     if (!lat || !lon) return;
     if (recentSet && !recentSet.has(p.permitnum)) return;
+    const key = `${lat},${lon}`;
+    let site = sites.get(key);
+    if (!site) { site = { lat, lon, key, permits: [] }; sites.set(key, site); }
+    site.permits.push(p);
+  });
 
-    const status  = getStatus(p);
-    const use     = getBuildingUse(p);
-    const units   = extractUnits(p);
-    const num     = esc(p.permitnum || "—");
-    const addr    = esc(p.originaladdress1 || "Address unknown");
-    const desc    = esc((p.description || "No description provided.").slice(0, 200));
-    const ptLabel = getPermitTypeLabel(p);
-    const rawAddr = p.originaladdress1 || "Address unknown";
-    const rawNum  = p.permitnum || "—";
+  sites.forEach(site => {
+    // Most recently active permit represents the site: it decides the pin's colour and
+    // opens first in the popup, matching how the grid orders things.
+    site.permits.sort((a, b) => lastActivityDate(b) - lastActivityDate(a));
+    const rep = site.permits[0];
+    // Which of this address's permits passed the filter, so the popup can mark the rest.
+    site.matched = new Set(site.permits.map(x => x.permitnum));
+    site.all = (siteAll.get(site.key) || site.permits)
+      .slice().sort((a, b) => lastActivityDate(b) - lastActivityDate(a));
+    const status = getStatus(rep);
 
-    const detailUrl = esc(safeUrl(p.link?.url) ||
-      (p._city === "bellevue"
-        ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(rawNum)}/BELLEVUE`
-        : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(rawNum)}`));
-    const cityStr = p._city === "bellevue" ? "Bellevue, WA" : "Seattle, WA";
-    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
-    const sipId  = SIP_INDEX[normalizeAddr(p)];
-    const sipUrl = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
-    const mupUrl = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
+    // Largest single permit rather than the sum. Permits at one address routinely revise
+    // each other — a 100-unit building re-permitted twice is still 100 homes, and summing
+    // would draw it as 200.
+    const unitsN = site.permits.reduce((m, p) => Math.max(m, parseFloat(extractUnits(p)) || 0), 0);
+    const valueN = site.permits.reduce((m, p) => Math.max(m, parseFloat(p.estprojectcost) || 0), 0);
 
-    // Size encodes scale: unit count when known, else declared value
-    const unitsN = parseFloat(units) || 0;
-    const valueN = parseFloat(p.estprojectcost) || 0;
     const rMax   = NARROW_MAP() ? 13 : 17;
     const radius = recentSet ? (NARROW_MAP() ? 7 : 9) :
       Math.max(6, Math.min(rMax, unitsN ? 5.5 + Math.sqrt(unitsN) * 0.75 : 5.5 + Math.sqrt(valueN / 1e6) * 0.6));
     const diameter = radius * 2;
+
     // A real L.Marker (not circleMarker/SVG) — shares markerPane with cluster bubbles, so
     // z-order and spiderfy-to-front both work; circleMarker's overlayPane always sits underneath.
-    const circle = L.marker([lat, lon], {
+    const circle = L.marker([site.lat, site.lon], {
       icon: L.divIcon({
         className: "chd-pin",
-        html: `<span style="width:${diameter}px;height:${diameter}px;background:${MAP_COLORS[status]}"></span>`,
+        html: `<span style="width:${diameter}px;height:${diameter}px;background:${MAP_COLORS[status]}"></span>`
+             + (site.permits.length > 1 ? `<i class="pin-count">${site.permits.length}</i>` : ""),
         iconSize: [diameter, diameter],
         iconAnchor: [diameter / 2, diameter / 2],
       }),
+      title: site.permits.length > 1
+        ? `${rep.originaladdress1 || "Address unknown"} — ${site.permits.length} permits`
+        : (rep.originaladdress1 || "Address unknown"),
     });
     circle._permitMeta = { units: unitsN, status };
     if (clusterGroup) clusterGroup.addLayer(circle); else circle.addTo(map);
-
-    // Popup reuses the card CSS classes — same look as grid view, kept in sync automatically
-    circle.bindPopup(`
-      <div style="padding:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-        <div class="card-header" style="margin-bottom:8px;padding-right:24px">
-          <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
-          <span class="badge ${status}">${statusLabel(status)}</span>
-        </div>
-        <div class="card-address" style="margin-bottom:6px">${addr}</div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-          <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
-          ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work">Site Work</span>` : ""}
-          <span class="use-tag ${use}">${useLabel(use)}</span>
-          ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
-        </div>
-        <div class="card-desc" style="margin-bottom:10px">${desc}</div>
-        <div class="card-meta" style="margin-bottom:10px">
-          <div class="meta-item"><span class="meta-key">Est. Value</span><span class="meta-val" style="color:var(--accent);font-weight:700">${fmtValue(p.estprojectcost)}</span></div>
-          <div class="meta-item"><span class="meta-key">Applied</span><span class="meta-val">${fmtDate(p.applieddate)}</span></div>
-          <div class="meta-item"><span class="meta-key">Issued</span><span class="meta-val">${fmtDate(p.issueddate)}</span></div>
-          ${recentMode ? `<div class="meta-item"><span class="meta-key" style="color:var(--accent)">Last Activity</span><span class="meta-val" style="color:var(--accent)">${fmtDate(lastActivityDate(p))}</span></div>` : ""}
-        </div>
-        <div class="card-links" style="border-top:1px solid var(--border);padding-top:8px">
-          <a class="card-link" href="${detailUrl}" target="_blank" rel="noopener">Permit Portal ↗</a>
-          ${mupUrl ? `<a class="card-link dr" href="${mupUrl}" target="_blank" rel="noopener">Design Review ↗</a>` : ""}
-          ${sipUrl ? `<a class="card-link sip" href="${sipUrl}" target="_blank" rel="noopener">View Renderings ↗</a>` : ""}
-          <a class="card-link maps" href="${mapsUrl}" target="_blank" rel="noopener">Google Maps ↗</a>
-        </div>
-      </div>`, { maxWidth: 360 });
+    circle.bindPopup(() => buildSitePopup(site), { maxWidth: 360, minWidth: 300 });
 
     markers.push(circle);
   });
