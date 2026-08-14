@@ -1170,9 +1170,14 @@
   <div class="modal" id="modal-body"></div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" integrity="sha256-Hk4dIpcqOSb0hZjgyvFOP+cEmDXUKKNE/tT542ZbNQg=" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js" integrity="sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=" crossorigin="anonymous"></script>
+<!-- All three are `defer`red. As blocking scripts they had to download AND parse before the
+     app script could run, so the first permit request could not leave the browser until
+     they had landed: measured 1,192-1,197ms on Slow 4G, ~170ms unthrottled. None of them is
+     needed by the default grid view. Deferred scripts still execute in order and before
+     DOMContentLoaded, which is the signal `whenLibsReady` waits on. -->
+<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" integrity="sha256-Hk4dIpcqOSb0hZjgyvFOP+cEmDXUKKNE/tT542ZbNQg=" crossorigin="anonymous"></script>
+<script defer src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js" integrity="sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=" crossorigin="anonymous"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const API = "https://data.seattle.gov/resource/76t5-zqzr.json";
@@ -1196,6 +1201,22 @@ function safeUrl(u) {
   return typeof u === "string" && /^https?:\/\//i.test(u) ? u : null;
 }
 const MIN_VALUE = 1_000_000;
+
+// ── Deferred library readiness ───────────────────────────────────────────────
+// Leaflet, markercluster and Chart.js are deferred so they stop delaying the permit
+// fetch. This script is inline and therefore runs BEFORE them, so anything touching
+// `L` or `Chart` has to wait. Deferred scripts are guaranteed to execute before
+// DOMContentLoaded, so that event is the readiness signal. `libsSettled` distinguishes
+// "not loaded yet" from "failed to load" — without it, the analytics view would show its
+// load-failure message to anyone who opened it during the first few hundred ms.
+let libsSettled = document.readyState !== "loading";
+const libsReadyPromise = libsSettled
+  ? Promise.resolve()
+  : new Promise(resolve => document.addEventListener("DOMContentLoaded",
+      () => { libsSettled = true; resolve(); }, { once: true }));
+function whenLibsReady(fn) {
+  if (libsSettled) fn(); else libsReadyPromise.then(fn);
+}
 
 // Seattle neighborhoods — City Clerk's Neighborhood Map Atlas sub-areas (S_HOOD),
 // grouped into display names. `rings` are simplified polygons (~22m) used for filtering;
@@ -1407,20 +1428,42 @@ applyTheme(currentTheme);
 async function fetchPermits() {
   const pageSize = 5000;
   const maxPages = 10;
-  const all = [];
-  for (let page = 0; page < maxPages; page++) {
+  // The dataset needs three pages, and fetched serially each one had to wait for the
+  // previous to land: 2522ms + 1014ms + 267ms, ~3.8s of a ~4.1s cold load spent idle.
+  // Firing the first three concurrently took the median from 2706ms to 1099ms across 8
+  // interleaved runs — the slowest parallel run still beat the serial median.
+  const EAGER_PAGES = 3;
+
+  const fetchPage = async (page) => {
     const params = new URLSearchParams({
       "$limit": String(pageSize),
       "$offset": String(page * pageSize),
-      "$order": "estprojectcost DESC",
+      // permitnum breaks ties. 6,696 of ~10,900 rows share an estprojectcost with some
+      // other permit and the largest tie group is 803, so if the server ordered ties
+      // differently between two concurrent requests, offset pages would overlap and
+      // silently drop rows. Measured stable without it, but that is undocumented
+      // behaviour to depend on and a second sort key costs nothing.
+      "$order": "estprojectcost DESC, permitnum ASC",
       "$where": `estprojectcost >= ${MIN_VALUE} AND latitude IS NOT NULL`
     });
     if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
     const res = await fetch(`${API}?${params}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const batch = await res.json();
-    all.push(...batch);
-    if (batch.length < pageSize) break;
+    return res.json();
+  };
+
+  const eager = await Promise.all(
+    Array.from({ length: EAGER_PAGES }, (_, i) => fetchPage(i)));
+  const all = eager.flat();
+
+  // Only keep paging if the last eager page came back full; otherwise the data ran out
+  // inside the block already in hand and further requests would return nothing.
+  if (eager[EAGER_PAGES - 1].length === pageSize) {
+    for (let page = EAGER_PAGES; page < maxPages; page++) {
+      const batch = await fetchPage(page);
+      all.push(...batch);
+      if (batch.length < pageSize) break;
+    }
   }
   return all;
 }
@@ -2122,20 +2165,37 @@ function fmtValue(v) {
   return `$${n.toLocaleString()}`;
 }
 
+// The formatter is built once and reused. toLocaleDateString constructs a fresh
+// Intl formatter on every call, which cost 28.8ms of self time in the CPU profile across
+// a single grid render; reusing one is ~23x faster for identical output. Same pattern as
+// seattleDayFmt above.
+const cardDateFmt = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
 function fmtDate(d) {
   if (!d) return "—";
-  return new Date(d).toLocaleDateString("en-US", { year:"numeric", month:"short", day:"numeric" });
+  const t = new Date(d);
+  // Intl's format() throws a RangeError on an invalid date where toLocaleDateString
+  // quietly returned the string "Invalid Date". Neither is worth showing, so unparseable
+  // input takes the same em-dash as a missing one.
+  return Number.isNaN(t.getTime()) ? "—" : cardDateFmt.format(t);
 }
 
-// Most recent milestone date across all date fields — used for "recent updates" sort
+// Most recent milestone date across all date fields — used for "recent updates" sort.
+// Returns epoch ms rather than a Date: this runs once per permit per map render, and the
+// previous form allocated up to eight Date objects per call (one per populated field,
+// plus one for the result) on top of a spread through Math.max.
+const ACTIVITY_FIELDS = [
+  "issueddate", "readytoissuedate", "planreviewcompletedate",
+  "initialreviewcompletedate", "applieddate", "finaleddate", "completeddate",
+];
 function lastActivityDate(p) {
-  const candidates = [
-    p.issueddate, p.readytoissuedate, p.planreviewcompletedate,
-    p.initialreviewcompletedate, p.applieddate, p.finaleddate, p.completeddate,
-  ].filter(Boolean);
-  return candidates.length
-    ? new Date(Math.max(...candidates.map(d => new Date(d))))
-    : new Date(0);
+  let best = 0;
+  for (const f of ACTIVITY_FIELDS) {
+    const v = p[f];
+    if (!v) continue;
+    const t = Date.parse(v);
+    if (t > best) best = t;
+  }
+  return best;
 }
 
 // ── Filter / sort ─────────────────────────────────────────────────────────────
@@ -2143,14 +2203,29 @@ function applyFilters() {
   const nbF   = document.getElementById("filter-neighborhood").value;
   const sortF = document.getElementById("sort-by").value;
 
-  const list = getFilteredList();
+  let list = getFilteredList();
 
-  list.sort((a, b) => {
-    if (sortF === "date_desc") return new Date(b.issueddate||b.applieddate||0) - new Date(a.issueddate||a.applieddate||0);
-    if (sortF === "date_asc")  return new Date(a.issueddate||a.applieddate||0) - new Date(b.issueddate||b.applieddate||0);
-    if (sortF === "address")   return (a.originaladdress1||"").localeCompare(b.originaladdress1||"");
-    return (parseFloat(b.estprojectcost)||0) - (parseFloat(a.estprojectcost)||0);
-  });
+  // The date sorts are decorate-sort-undecorate rather than a comparator that parses
+  // dates inline. The old comparator built four Date objects per comparison, and at
+  // ~10,900 permits a sort is ~146k comparisons — on the order of 580k allocations.
+  // Parsing each permit's key once takes date_desc from 52.4ms to 3.0ms for byte-identical
+  // ordering. This matters more than it looks: date_desc is the first <option>, so it is
+  // the default, and it runs on every load and every filter change.
+  if (sortF === "date_desc" || sortF === "date_asc") {
+    const dir = sortF === "date_desc" ? -1 : 1;
+    const decorated = list.map(p => {
+      const raw = p.issueddate || p.applieddate;
+      const t = raw ? Date.parse(raw) : 0;
+      return { p, t: Number.isFinite(t) ? t : 0 };
+    });
+    // Array.sort is stable, so ties keep their prior order exactly as they did before.
+    decorated.sort((a, b) => dir * (a.t - b.t));
+    list = decorated.map(d => d.p);
+  } else if (sortF === "address") {
+    list.sort((a, b) => (a.originaladdress1 || "").localeCompare(b.originaladdress1 || ""));
+  } else {
+    list.sort((a, b) => (parseFloat(b.estprojectcost) || 0) - (parseFloat(a.estprojectcost) || 0));
+  }
 
   gridLimit = GRID_PAGE;
   updateStats(list);
@@ -3014,6 +3089,11 @@ function renderMapLegend() {
 }
 
 function renderMap(permits) {
+  // Leaflet is deferred, and this is the only door into it — every other Leaflet call
+  // sits behind a map control rail that does not exist until this function has run. A
+  // `?view=map` deep link reaches here during initial parse, before deferred scripts
+  // execute, so re-run once they have rather than throwing on an undefined `L`.
+  if (typeof L === "undefined") { whenLibsReady(() => renderMap(permits)); return; }
   if (!map) {
     const initCenter = currentCity === "bellevue" ? [47.610, -122.200] : [47.608, -122.335];
     const initZoom   = currentCity === "bellevue" ? 13 : 12;
@@ -3062,7 +3142,7 @@ function renderMap(permits) {
   if (recentMode && permits.length) {
     const dated = permits
       .filter(p => parseFloat(p.latitude) && parseFloat(p.longitude))
-      .map(p => [lastActivityDate(p).getTime(), p.permitnum]);
+      .map(p => [lastActivityDate(p), p.permitnum]);   // already epoch ms
     dated.sort((a, b) => b[0] - a[0]);
     recentSet = new Set(dated.slice(0, recentCount).map(d => d[1]));
   }
@@ -3152,10 +3232,13 @@ const analyticsCache = new Map();    // `${city}:${scope}` → { ts, promise }
 const ANALYTICS_TTL_MS = 30 * 60 * 1000;   // 30 min — permit data updates daily, not hourly
 const anCharts = {};                 // canvas id → Chart instance
 
-if (window.Chart) {
+// Chart.js is deferred, so it is not defined while this script runs — set its defaults
+// once it has loaded instead.
+whenLibsReady(() => {
+  if (!window.Chart) return;
   Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   applyTheme(currentTheme);  // sets Chart.defaults.color/borderColor from the active palette
-}
+});
 
 function isoDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -3575,6 +3658,9 @@ function renderAnalytics(d) {
 
 async function loadAnalytics() {
   if (!window.Chart) {
+    // Chart.js is deferred, so "not there yet" and "failed" are different states now.
+    // Only the settled case is a real failure; otherwise wait and try again.
+    if (!libsSettled) { whenLibsReady(loadAnalytics); return; }
     document.getElementById("an-stats").innerHTML =
       `<div class="an-stat"><div class="label">Charts unavailable</div><div class="vs">Chart.js failed to load — check your connection and refresh.</div></div>`;
     return;
@@ -3667,7 +3753,10 @@ function setView(v) {
   if (v === "map") {
     const filtered = getFilteredList();
     renderMap(filtered);
-    setTimeout(() => map && map.invalidateSize(), 100);
+    // Gated on the same signal renderMap is: on a `?view=map` deep link the map does not
+    // exist yet, and an ungated 100ms timer would fire before Leaflet had built it,
+    // leaving the container sized wrong until the next interaction.
+    whenLibsReady(() => setTimeout(() => map && map.invalidateSize(), 100));
   }
   if (v === "analytics") loadAnalytics();
   syncState();
