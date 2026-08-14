@@ -4,10 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Large Developments Viewer</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src https://*.basemaps.cartocdn.com data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://services.arcgis.com https://www.seattleinprogress.com; manifest-src 'self'; worker-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' https://*.basemaps.cartocdn.com data:; connect-src https://data.seattle.gov https://services1.arcgis.com https://services.arcgis.com https://www.seattleinprogress.com; manifest-src 'self'; worker-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="theme-color" content="#0f1117" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icon-192.png" />
+  <!-- Without this the browser probes /favicon.ico on every load and 404s. Reuses the PWA
+       icon rather than adding a second asset; only renders now that img-src allows 'self'. -->
+  <link rel="icon" href="icon-192.png" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" integrity="sha256-YU3qCpj/P06tdPBJGPax0bm6Q1wltfwjsho5TR4+TYc=" crossorigin="anonymous" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" integrity="sha256-YSWCMtmNZNwqex4CEw1nQhvFub2lmU7vcCKP+XVwwXA=" crossorigin="anonymous" />
@@ -2535,7 +2538,12 @@ function openModal(pn) {
     e.preventDefault();
     closeModal();
     setView("map");
-    map.setView([parseFloat(p.latitude), parseFloat(p.longitude)], 17);
+    // renderMap can defer until Leaflet lands, so `map` is not guaranteed to exist the
+    // instant setView returns. Registered after renderMap's own callback, so the map has
+    // been built by the time this runs. Not reachable today — the modal needs a rendered
+    // card, which needs fetched data, which lands long after DOMContentLoaded — but the
+    // ordering assumption this used to rely on is no longer true, so don't rely on it.
+    whenLibsReady(() => map && map.setView([parseFloat(p.latitude), parseFloat(p.longitude)], 17));
   });
 }
 
