@@ -748,6 +748,22 @@
        an absolutely-positioned element, so making it relative offsets all of them by
        their static flow position and the pins vanish off-screen. The absolute badge below
        already resolves against the icon, because Leaflet has positioned it for us. */
+    /* Transient marker for the pin you asked for via "Show on Map". Animates the inner
+       span, never .chd-pin itself — see the positioning note above. */
+    .chd-pin.pin-target span {
+      border-color: var(--accent);
+      border-width: 2.5px;
+      opacity: 1;
+      animation: pinTargetPulse 0.85s ease-out 3;
+    }
+    @keyframes pinTargetPulse {
+      0%   { box-shadow: 0 0 0 0 rgba(96,165,250,0.85), 0 1px 3px rgba(0,0,0,0.35); }
+      70%  { box-shadow: 0 0 0 14px rgba(96,165,250,0), 0 1px 3px rgba(0,0,0,0.35); }
+      100% { box-shadow: 0 0 0 0 rgba(96,165,250,0), 0 1px 3px rgba(0,0,0,0.35); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .chd-pin.pin-target span { animation: none; box-shadow: 0 0 0 4px rgba(96,165,250,0.7); }
+    }
     .chd-pin .pin-count {
       position: absolute;
       top: -6px; right: -8px;
@@ -2543,7 +2559,13 @@ function openModal(pn) {
     // been built by the time this runs. Not reachable today — the modal needs a rendered
     // card, which needs fetched data, which lands long after DOMContentLoaded — but the
     // ordering assumption this used to rely on is no longer true, so don't rely on it.
-    whenLibsReady(() => map && map.setView([parseFloat(p.latitude), parseFloat(p.longitude)], 17));
+    whenLibsReady(() => {
+      if (!map) return;
+      map.setView([parseFloat(p.latitude), parseFloat(p.longitude)], 17);
+      // Wait for the pan/zoom to settle before hunting for the marker: markercluster
+      // rebuilds which pins are drawn as the zoom changes.
+      setTimeout(() => highlightSiteMarker(p), 350);
+    });
   });
 }
 
@@ -2600,7 +2622,7 @@ function fmtCompact(n) {
 }
 
 // Cluster bubbles: ring is a conic-gradient of the child permits' status mix, center label is
-// total homes added (falls back to permit count when nothing in the cluster adds units).
+// the number of projects it holds; homes added move to the hover tooltip.
 const STATUS_ORDER = ["issued", "complete", "review", "pending", "cancelled", "other"];
 function clusterRing(counts, total) {
   let acc = 0;
@@ -2622,20 +2644,32 @@ const NARROW_MAP = () => window.innerWidth <= 640;
 function clusterIconCreate(cluster) {
   const children = cluster.getAllChildMarkers();
   const counts = {};
-  let units = 0, hasUnits = false;
+  let units = 0;
   children.forEach(m => {
     const meta = m._permitMeta || {};
-    if (meta.units) { units += meta.units; hasUnits = true; }
+    if (meta.units) units += meta.units;
     counts[meta.status || "other"] = (counts[meta.status || "other"] || 0) + 1;
   });
   const count = children.length;
-  const label = hasUnits ? fmtCompact(units) : String(count);
+  // Always the project count. This used to show homes when any child had a unit figure and
+  // fall back to the project count when none did — two different meanings in the same slot
+  // with nothing to tell them apart, and the fallback values (2-35) sat squarely inside the
+  // range of real homes labels (1-44,470). Measured at 18.6% / 22.9% / 20.7% of clusters at
+  // zooms 13/14/15, i.e. about one in five was showing a number the legend mislabelled.
+  // Only 31.8% of permits carry a unit count at all, so the ambiguity was never going away.
+  // Homes are still legible from dot size and the ring, and exactly from the hover title.
+  const label = String(count);
   const size  = NARROW_MAP()
     ? Math.round(Math.max(30, Math.min(46, 26 + Math.sqrt(count) * 2.6)))
     : Math.round(Math.max(34, Math.min(60, 30 + Math.sqrt(count) * 3.4)));
+  // Homes moved to the tooltip rather than being dropped: the number is still worth having,
+  // it just can't share the badge with the project count without being ambiguous.
+  const tip = units
+    ? `${count} project${count !== 1 ? "s" : ""} · ${fmtCompact(units)} homes added`
+    : `${count} project${count !== 1 ? "s" : ""} · no unit data`;
   return L.divIcon({
     className: "chd-cluster",
-    html: `<div class="cc-ring" style="width:${size}px;height:${size}px;background:${clusterRing(counts, count)}">
+    html: `<div class="cc-ring" title="${esc(tip)}" style="width:${size}px;height:${size}px;background:${clusterRing(counts, count)}">
              <div class="cc-core">${esc(label)}</div>
            </div>`,
     iconSize: [size, size],
@@ -2700,7 +2734,7 @@ function permitPopupBody(p) {
 // Built as a live element rather than an HTML string: the prev/next controls re-render
 // in place, which keeps the map still instead of closing and reopening the popup.
 // Rebuilt on each open (bindPopup takes a function), so it always reflects current data.
-function buildSitePopup(site) {
+function buildSitePopup(site, openAtPermit) {
   const wrap = document.createElement("div");
   wrap.style.cssText = "padding:14px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 
@@ -2714,6 +2748,12 @@ function buildSitePopup(site) {
   const hiddenCount = n - matched.size;
   // Open on a permit that actually matched, since that's what the pin was drawn for.
   let i = Math.max(0, list.findIndex(x => matched.has(x.permitnum)));
+  // ...unless we arrived from "Show on Map", which is about one specific permit. A pin is a
+  // site now, so landing on the site's default would show the wrong project at the address.
+  if (openAtPermit) {
+    const j = list.findIndex(x => x.permitnum === openAtPermit);
+    if (j >= 0) i = j;
+  }
 
   function render() {
     const p = list[i];
@@ -3070,7 +3110,7 @@ function renderMapLegend() {
       `<div class="leg-row leg-note"><span>Centers &amp; Corridors, sent to Council<br>28 Jan 2026 · not adopted</span></div>`);
   }
   sections.push(
-    `<div class="leg-row leg-note"><span>dot size = homes added · cluster ring = status mix, center = homes added</span></div>`);
+    `<div class="leg-row leg-note"><span>dot size = homes added · cluster ring = status mix, center = projects in cluster (hover for homes)</span></div>`);
 
   const legend = document.createElement("div");
   legend.id = "map-legend";
@@ -3093,6 +3133,38 @@ function renderMapLegend() {
     legend.classList.add("multicol");
     // Belt and braces for very short viewports, where even columns can overflow.
     if (legend.scrollWidth > legend.clientWidth + 1) legend.classList.add("scrollable");
+  }
+}
+
+// Find the site pin for a permit, reveal it, and open its popup on that permit. Without
+// this, "Show on Map" dropped you at z17 next to several identical dots with no way to tell
+// which one you had asked for.
+function highlightSiteMarker(p) {
+  const lat = parseFloat(p.latitude), lon = parseFloat(p.longitude);
+  if (!lat || !lon || !markers.length) return;
+  const target = markers.find(m => {
+    const ll = m.getLatLng();
+    return Math.abs(ll.lat - lat) < 1e-9 && Math.abs(ll.lng - lon) < 1e-9;
+  });
+  if (!target) return;
+
+  const reveal = () => {
+    target._openAtPermit = p.permitnum;
+    target.openPopup();
+    // The pulse rides on the icon element, which only exists once the marker is actually
+    // drawn — hence doing this inside the callback rather than straight away.
+    const el = target._icon;
+    if (!el) return;
+    el.classList.add("pin-target");
+    setTimeout(() => el.classList.remove("pin-target"), 2600);
+  };
+
+  // A pin inside a collapsed cluster has no icon of its own yet, so ask markercluster to
+  // open down to it first; otherwise the popup would attach to nothing.
+  if (clusterGroup && clusterGroup.hasLayer(target) && typeof clusterGroup.zoomToShowLayer === "function") {
+    clusterGroup.zoomToShowLayer(target, reveal);
+  } else {
+    reveal();
   }
 }
 
@@ -3227,7 +3299,14 @@ function renderMap(permits) {
     });
     circle._permitMeta = { units: unitsN, status };
     if (clusterGroup) clusterGroup.addLayer(circle); else circle.addTo(map);
-    circle.bindPopup(() => buildSitePopup(site), { maxWidth: 360, minWidth: 300 });
+    // Leaflet passes the layer to a function popup, which lets "Show on Map" stash which
+    // permit it wants opened. Consumed once so a later ordinary click still opens on the
+    // site's own default.
+    circle.bindPopup((layer) => {
+      const at = layer._openAtPermit;
+      layer._openAtPermit = null;
+      return buildSitePopup(site, at);
+    }, { maxWidth: 360, minWidth: 300 });
 
     markers.push(circle);
   });
@@ -3299,7 +3378,23 @@ async function fetchSeattleAnalytics(largeOnly) {
   const aduWhere = ["%ACCESSORY DWELLING%", "%DADU%", "%(ADU)%", "% ADU%"]
     .map(p => `upper(description) like '${p}'`).join(" OR ");
 
-  const [yearly, ytd, ytdPrior, review, monthly, pipe, outTotals, outAbandoned, adu, nbhdRows, cpuYearly] = await Promise.all([
+  // Seattle stamps a project's unit count onto EVERY permit in the project, including the
+  // demolition record — 7121584-CN and 7121585-DM, same address, 1 unit each. Summing
+  // housingunitsadded therefore counts the same homes twice, which had "Housing Units Added
+  // YTD" reading 2,630 against a defensible 2,268.
+  //
+  // Rather than pull all 14,250 unit-bearing permits to dedupe client-side, ask the server
+  // for only the duplicate groups — same address, same unit count, more than one record —
+  // which is ~40 rows for a year and 3.5 KB. Conservative on purpose: a group is only
+  // collapsed when it pairs a demolition record with a build record. Groups of same-size
+  // permits with no demolition among them are left counted as-is, since two 1-unit permits
+  // at one address can legitimately be two separate houses.
+  const dupSelect = "originaladdress1, housingunitsadded, count(*) AS n, " +
+    "sum(case(permittypemapped='Demolition',1,true,0)) AS demos";
+  const dupWhere = `housingunitsadded > 0 AND applieddate >= '${startYear}-01-01' AND applieddate <= '${today}'${scope}`;
+
+  const [yearly, ytd, ytdPrior, review, monthly, pipe, outTotals, outAbandoned, adu, nbhdRows, cpuYearly,
+         dupByYear, dupPriorYtd] = await Promise.all([
     soqlFetch({ "$select": "date_extract_y(applieddate) AS year, " + ytdSelect + ", sum(housingunitsremoved) AS removed",
                 "$group": "year", "$order": "year",
                 "$where": `applieddate >= '${startYear}-01-01'${scope}` }),
@@ -3336,7 +3431,47 @@ async function fetchSeattleAnalytics(largeOnly) {
                 "$group": "year", "$order": "year",
                 "$where": `applieddate >= '${startYear}-01-01' AND housingunitsadded > 0${scope}` })
       .catch(() => null),
+    // Duplicate groups per year. The current year's group doubles as the YTD figure: the
+    // where clause is capped at today, so "all of year y" and "year y up to today" are the
+    // same set of permits.
+    soqlFetch({ "$select": "date_extract_y(applieddate) AS year, " + dupSelect,
+                "$group": "year, originaladdress1, housingunitsadded",
+                "$having": "count(*) > 1", "$where": dupWhere, "$limit": "20000" })
+      .catch(() => null),
+    // Prior-year YTD needs its own window — a partial year, so it can't be read off the
+    // per-year grouping above.
+    soqlFetch({ "$select": dupSelect,
+                "$group": "originaladdress1, housingunitsadded",
+                "$having": "count(*) > 1",
+                "$where": `housingunitsadded > 0 AND applieddate between '${y-1}-01-01' and '${priorToday}'${scope}`,
+                "$limit": "20000" })
+      .catch(() => null),
   ]);
+
+  // A group only counts as a double-count when a demolition record and a build record sit
+  // together in it; then n-1 of its copies are restatements of the same homes.
+  const dupOvercount = (rows) => {
+    if (!rows) return 0;
+    let over = 0;
+    for (const g of rows) {
+      const n = +g.n || 0, demos = +(g.demos || 0), units = +g.housingunitsadded || 0;
+      if (demos >= 1 && n - demos >= 1) over += units * (n - 1);
+    }
+    return over;
+  };
+  const overByYear = {};
+  if (dupByYear) {
+    for (const g of dupByYear) {
+      const n = +g.n || 0, demos = +(g.demos || 0), units = +g.housingunitsadded || 0;
+      if (demos >= 1 && n - demos >= 1) {
+        const yr = +g.year;
+        overByYear[yr] = (overByYear[yr] || 0) + units * (n - 1);
+      }
+    }
+  }
+  const priorYtdOver = dupOvercount(dupPriorYtd);
+  // Never let a correction drive a figure negative, however the upstream data shifts.
+  const netUnits = (raw, over) => Math.max(0, raw - (over || 0));
 
   // Bin unit-adding permits by neighborhood. The atlas polygons partition the city, so
   // each permit counts once — the old bounding boxes overlapped and double-counted 32%
@@ -3356,10 +3491,13 @@ async function fetchSeattleAnalytics(largeOnly) {
 
   return {
     yearly: yearly
-      .map(r => ({ year: +r.year, permits: +r.permits, units: +(r.units || 0), value: +(r.value || 0), removed: +(r.removed || 0) }))
+      .map(r => ({ year: +r.year, permits: +r.permits,
+                   units: netUnits(+(r.units || 0), overByYear[+r.year]),
+                   value: +(r.value || 0), removed: +(r.removed || 0) }))
       .filter(r => r.year >= startYear && r.year <= y),
-    ytd:      { permits: +ytd[0].permits,      units: +(ytd[0].units || 0),      value: +(ytd[0].value || 0) },
-    ytdPrior: { permits: +ytdPrior[0].permits, units: +(ytdPrior[0].units || 0), value: +(ytdPrior[0].value || 0) },
+    // Current year's duplicate group IS the YTD window (dupWhere is capped at today).
+    ytd:      { permits: +ytd[0].permits,      units: netUnits(+(ytd[0].units || 0), overByYear[y]), value: +(ytd[0].value || 0) },
+    ytdPrior: { permits: +ytdPrior[0].permits, units: netUnits(+(ytdPrior[0].units || 0), priorYtdOver), value: +(ytdPrior[0].value || 0) },
     review: review
       ? review.map(r => ({ year: +r.year, days: Math.round(+r.days) })).filter(r => r.year >= startYear && r.year <= y)
       : null,
@@ -3381,8 +3519,11 @@ async function fetchSeattleAnalytics(largeOnly) {
       ? adu.map(r => ({ year: +r.year, n: +r.n })).filter(r => r.year >= startYear && r.year <= y)
       : null,
     nbhd,
+    // Same de-duplication as the yearly series — cost per unit divides by this, so leaving
+    // it inflated would understate what a home actually costs to build.
     cpuYearly: cpuYearly
-      ? cpuYearly.map(r => ({ year: +r.year, value: +(r.value || 0), units: +(r.units || 0) }))
+      ? cpuYearly.map(r => ({ year: +r.year, value: +(r.value || 0),
+                              units: netUnits(+(r.units || 0), overByYear[+r.year]) }))
           .filter(r => r.year >= startYear && r.year <= y)
       : null,
   };
@@ -3540,7 +3681,7 @@ function renderAnalytics(d) {
       desc: "Permit applications submitted since Jan 1." },
     { label: "Housing Units Added YTD", cur: d.ytd.units,   prev: d.ytdPrior.units,   fmt: intFmt,
       note: `vs ${intFmt(d.ytdPrior.units)} same period last year`,
-      desc: "Homes created by permits filed this year." },
+      desc: "Homes created by permits filed this year. Seattle records a project's unit count on every permit in it, including the demolition record, so paired demolition entries are collapsed to avoid counting the same homes twice." },
     { label: "Total Project Value YTD", cur: d.ytd.value,   prev: d.ytdPrior.value,   fmt: fmtValue,
       note: `vs ${fmtValue(d.ytdPrior.value)} same period last year`,
       desc: "Combined estimated cost of this year's filings.",
@@ -3905,15 +4046,23 @@ async function init() {
   if (view && view !== "grid") setView(view);
   syncCityOnlyButtons();
   try {
+    // Street activity starts now but is deliberately NOT awaited. It only feeds badges and
+    // the Street Work filter, which is off by default — nothing the first paint depends on.
+    // Its ArcGIS query costs up to 9.2s on a cold result cache (measured 9,196ms, against
+    // 1.0-1.2s for the permit pages it races), and because it sat in this Promise.all it
+    // held the card grid at 9.0s when the data actually needed was ready at 1.5s. Re-running
+    // applyFilters when it lands paints the badges in afterwards.
+    if (currentCity !== "bellevue") {
+      fetchStreetActivity()
+        .then(() => { if (allPermits && allPermits.length) applyFilters(); })
+        .catch(() => {});
+    }
+
     [allPermits] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
-      currentCity === "bellevue" ? Promise.resolve() : fetchStreetActivity(),
-      // In parallel, so the MHA badge is authoritative on first paint rather than
-      // correcting itself a moment later. It rides alongside a permit fetch ~10x its
-      // size, so it costs no perceptible time.
+      // These two stay awaited. At 313ms and 486ms they cost nothing next to the permit
+      // fetch, and they drive badges that would otherwise visibly pop in a moment later.
       currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
-      // Same reasoning: the rezone badge is part of the card, so it loads with the cards
-      // rather than waiting on the map layer that also draws it.
       currentCity === "bellevue" ? Promise.resolve() : fetchPendingRezones(),
     ]);
     computeWatchChanges();
@@ -3991,15 +4140,23 @@ document.getElementById("filter-city").addEventListener("change", async function
   openControlId = null;   // else a popout survives the teardown and reopens on the next render
 
   try {
+    // Street activity starts now but is deliberately NOT awaited. It only feeds badges and
+    // the Street Work filter, which is off by default — nothing the first paint depends on.
+    // Its ArcGIS query costs up to 9.2s on a cold result cache (measured 9,196ms, against
+    // 1.0-1.2s for the permit pages it races), and because it sat in this Promise.all it
+    // held the card grid at 9.0s when the data actually needed was ready at 1.5s. Re-running
+    // applyFilters when it lands paints the badges in afterwards.
+    if (currentCity !== "bellevue") {
+      fetchStreetActivity()
+        .then(() => { if (allPermits && allPermits.length) applyFilters(); })
+        .catch(() => {});
+    }
+
     [allPermits] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
-      currentCity === "bellevue" ? Promise.resolve() : fetchStreetActivity(),
-      // In parallel, so the MHA badge is authoritative on first paint rather than
-      // correcting itself a moment later. It rides alongside a permit fetch ~10x its
-      // size, so it costs no perceptible time.
+      // These two stay awaited. At 313ms and 486ms they cost nothing next to the permit
+      // fetch, and they drive badges that would otherwise visibly pop in a moment later.
       currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
-      // Same reasoning: the rezone badge is part of the card, so it loads with the cards
-      // rather than waiting on the map layer that also draws it.
       currentCity === "bellevue" ? Promise.resolve() : fetchPendingRezones(),
     ]);
     computeWatchChanges();

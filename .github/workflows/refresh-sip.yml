@@ -39,6 +39,23 @@ jobs:
       - name: Build weekly digest (whats-new.html + feed.xml)
         run: bash build-whats-new.sh
 
+      # The three baked constants above grow every week and nothing was watching. index.html
+      # went 264 KB -> 278 KB raw (72 -> 77 KB gzipped) in a fortnight without anyone
+      # noticing. Gzipped is the number that matters — it's what users actually download.
+      # Warn well before it hurts; the whole page is one request on the critical path.
+      - name: Check page size budget
+        run: |
+          BUDGET=102400   # 100 KB gzipped
+          SIZE=$(gzip -c index.html | wc -c)
+          RAW=$(wc -c < index.html)
+          echo "index.html: $RAW bytes raw, $SIZE bytes gzipped (budget $BUDGET)"
+          if [ "$SIZE" -gt "$BUDGET" ]; then
+            echo "::error::index.html is $SIZE bytes gzipped, over the $BUDGET budget."
+            exit 1
+          fi
+          # Surface the trend even when it passes, so growth is visible in the run log.
+          echo "::notice::Page size $((SIZE * 100 / BUDGET))% of budget ($SIZE / $BUDGET bytes gzipped)"
+
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
