@@ -56,6 +56,24 @@ jobs:
           # Surface the trend even when it passes, so growth is visible in the run log.
           echo "::notice::Page size $((SIZE * 100 / BUDGET))% of budget ($SIZE / $BUDGET bytes gzipped)"
 
+      # The refresh scripts rewrite three constants inside the app's only script tag by regex.
+      # They are well guarded — each aborts unless it replaced exactly once and the payload
+      # clears a plausibility floor — but nothing checked that the RESULT still parses. This
+      # is the last gate before a push that goes straight to the live site, and a syntax error
+      # here would take the whole page down with every other check still reporting success.
+      - name: Syntax-check the rewritten page
+        run: |
+          python3 - <<'PY' > /tmp/app.js
+          import re, sys
+          s = open("index.html", encoding="utf-8").read()
+          m = re.search(r"<script>\n(.*)\n</script>\n</body>", s, re.S)
+          if not m:
+              sys.exit("could not locate the inline app script — the page structure changed")
+          print(m.group(1))
+          PY
+          node --check /tmp/app.js
+          echo "::notice::Inline app script parses cleanly"
+
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
@@ -70,6 +88,41 @@ jobs:
       # clean push and silently leave the old build up. This checks what's actually served.
       - name: Verify the live site is serving this build
         run: bash verify-deploy.sh
+
+      # verify-deploy.sh only compares SHA-256 of local vs served, so it reports success for a
+      # page that is byte-perfect and completely broken. This actually loads the deployed site
+      # and checks it works: data sources populated, no console errors, no uncaught exceptions.
+      # Exit 1 means the site is broken, exit 2 means the checker could not run — only the
+      # former should fail the job, since a Chrome problem on the runner says nothing about
+      # the site and would otherwise raise a false alarm every time it flaked.
+      - name: Health-check the deployed site
+        run: |
+          # Preconditions are checked rather than assumed, and a missing one downgrades to a
+          # warning. Deliberately not adding actions/setup-node: this job holds contents:write
+          # and pushes straight to the live site, which is why checkout is pinned to a SHA, and
+          # a new unpinned action would undo that reasoning for a nice-to-have check.
+          # health-check.mjs needs Node 22+ for the built-in WebSocket.
+          MAJOR=$(node -p "process.versions.node.split('.')[0]")
+          if [ "$MAJOR" -lt 22 ]; then
+            echo "::warning::Runner has Node $MAJOR, health-check needs 22+ — skipping"
+            exit 0
+          fi
+          CHROME_BIN=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || true)
+          if [ -z "$CHROME_BIN" ]; then
+            echo "::warning::No Chrome on the runner — skipping health check"
+            exit 0
+          fi
+          echo "Using Node $MAJOR and $CHROME_BIN"
+          set +e
+          CHROME_PATH="$CHROME_BIN" node health-check.mjs
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then echo "::notice::Live site healthy"; exit 0; fi
+          # Exit 2 is "the checker could not run", which says nothing about the site — warn,
+          # don't fail, or a flaky runner raises a false alarm about a healthy deploy.
+          if [ "$CODE" -eq 2 ]; then echo "::warning::Health check could not run (exit 2) — site status unknown"; exit 0; fi
+          echo "::error::Live site is serving this build but the page is broken (exit $CODE)"
+          exit 1
 
       - name: Open issue on failure
         if: failure()

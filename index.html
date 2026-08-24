@@ -1325,6 +1325,12 @@ let clusterGroup = null;
 let tileLayer = null;
 let currentView = "grid";
 let currentCity = "seattle";
+// Bumped whenever we start loading a different city's dataset. Every async load captures it
+// and discards its result if it no longer matches, so a slow response can't land on top of a
+// newer one. Without it, switching Seattle -> Bellevue -> Seattle fast enough leaves two
+// fetches in flight and the loser wins allPermits: the app then showed 4,987 Bellevue rows
+// under a "Seattle" title with Seattle's neighbourhood list, which matches none of them.
+let dataGeneration = 0;
 let recentMode  = false;
 let recentCount = 20;
 let streetWorkLayer   = null;   // Leaflet LayerGroup for the citywide SDOT overlay
@@ -1732,20 +1738,28 @@ function describeStreetImpact(a) {
   return { text: `${facility} ${sev.toLowerCase()}${reason}`, startMs: a.USE_START_DATE, endMs: a.USE_END_DATE };
 }
 
+// SDOT's USE_START_DATE / USE_END_DATE are esriFieldTypeDate and arrive as UTC midnight of
+// the calendar day — 2026-08-29 comes through as exactly 2026-08-29T00:00:00Z. Formatting
+// those in the browser's zone put every one of the ~285 entries a day early for Pacific
+// viewers ("thru Aug 28" for a permit running through the 29th), because UTC midnight is
+// 17:00 the previous afternoon here. Read the day back out in UTC, which is the frame it
+// was written in, and compare calendar days via seattleDay rather than raw instants.
+const streetDayFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "UTC", month: "short", day: "numeric",
+});
+// The UTC calendar day a street-use timestamp names, as YYYY-MM-DD.
+function streetDayOf(ms) { return new Date(ms).toISOString().slice(0, 10); }
+
 function fmtStreetEnds(endMs) {
   if (!endMs) return "";
-  const end = new Date(endMs);
-  const today = new Date();
-  if (end.toDateString() === today.toDateString()) return "ends today";
-  return `thru ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  if (streetDayOf(endMs) === seattleDay()) return "ends today";
+  return `thru ${streetDayFmt.format(endMs)}`;
 }
 
 function fmtStreetBegins(startMs) {
   if (!startMs) return "";
-  const start = new Date(startMs);
-  const today = new Date();
-  if (start.toDateString() === today.toDateString()) return "starts today";
-  return `starts ${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  if (streetDayOf(startMs) === seattleDay()) return "starts today";
+  return `starts ${streetDayFmt.format(startMs)}`;
 }
 
 async function fetchStreetActivity() {
@@ -1755,7 +1769,7 @@ async function fetchStreetActivity() {
   const todayStr = seattleDay(today);
   const horizon = new Date(today.getTime() + STREET_UPCOMING_WINDOW_DAYS * 86400000);
   const horizonStr = seattleDay(horizon);
-  const nowMs = today.getTime();
+
   // Window covers both currently-active permits and ones scheduled to start within
   // the upcoming horizon — bucketed client-side by comparing USE_START_DATE to now.
   const where = `PERMIT_TYPE_ALIAS IN ('Construction and Storage Containers','ROW Construction Permit','Shoring') ` +
@@ -1778,7 +1792,11 @@ async function fetchStreetActivity() {
       if (!key) continue;
       const impact = describeStreetImpact(a);
       if (!impact) continue;
-      if (impact.startMs <= nowMs) {
+      // Compare calendar days, not instants. startMs is UTC midnight of the start day while
+      // nowMs is a raw clock reading, so a plain `<=` flipped tomorrow's closures to "active"
+      // from 17:00 Pacific onwards — the map showed an in-force orange closure for work that
+      // had not begun. A permit is active once its start day is today or earlier.
+      if (streetDayOf(impact.startMs) <= seattleDay()) {
         const existing = STREET_ACTIVITY[key];
         if (!existing || impact.endMs < existing.endMs) STREET_ACTIVITY[key] = impact;
       } else {
@@ -2140,16 +2158,25 @@ function getStatus(p) {
 // these are permits SDCI still lists as Issued, so the app shows them as active
 // construction when the authorization underneath has actually lapsed — 28 of them, one
 // issued in 2016. Seattle only; Bellevue's feed carries no expiry date.
+// SDCI dates are zoneless ("2007-02-28T00:00:00.000"), which Date.parse reads as LOCAL time,
+// while seattleTodayMs() builds a UTC instant — so the two sides were never in the same frame
+// despite the comparison assuming they were. East of UTC that flagged permits as lapsed a day
+// early. Parsing the date part as UTC puts both sides on the same footing, which is what
+// "compare them as plain calendar days" was always meant to mean.
+function permitDateMs(v) {
+  return typeof v === "string" ? Date.parse(v.slice(0, 10) + "T00:00:00Z") : NaN;
+}
+
 function permitLapsed(p) {
   if (p._city === "bellevue" || !p.expiresdate || p.completeddate) return null;
-  const t = Date.parse(p.expiresdate);
+  const t = permitDateMs(p.expiresdate);
   if (!Number.isFinite(t) || t >= seattleTodayMs()) return null;
   // Two permits citywide carry an expiry that predates their own issue date — 800
   // OCCIDENTAL AVE S is issued 2026-07-23 and expires 2026-06-04. That's a data-entry
   // error rather than a lapse, and it surfaced on the first page of the stalled view, so
   // it's worth the two lines to suppress.
   if (p.issueddate) {
-    const iss = Date.parse(p.issueddate);
+    const iss = permitDateMs(p.issueddate);
     if (Number.isFinite(iss) && t <= iss) return null;
   }
   return t;
@@ -2163,9 +2190,9 @@ function isStalled(p) {
   const st = getStatus(p);
   if (st !== "issued" && st !== "expired") return false;
   if (!p.expiresdate) return false;
-  const t = Date.parse(p.expiresdate);
+  const t = permitDateMs(p.expiresdate);
   if (!Number.isFinite(t) || t >= seattleTodayMs()) return false;
-  const iss = Date.parse(p.issueddate);          // same backwards-date guard as permitLapsed
+  const iss = permitDateMs(p.issueddate);        // same backwards-date guard as permitLapsed
   return !Number.isFinite(iss) || t > iss;
 }
 
@@ -2218,7 +2245,13 @@ function lastActivityDate(p) {
 }
 
 // ── Filter / sort ─────────────────────────────────────────────────────────────
-function applyFilters() {
+// `preserveView` repaints the data without touching anything the user has since adjusted —
+// no paging reset, no map recentre. Late-arriving background data (street activity, which
+// can land up to 9s after the grid is usable) must use it: a full applyFilters is not a
+// badge refresh, it collapses "show more" back to the first page, closes any open popup and
+// yanks the map back to the default centre, and doing that mid-interaction is worse than
+// the stall it replaced.
+function applyFilters({ preserveView = false } = {}) {
   const nbF   = document.getElementById("filter-neighborhood").value;
   const sortF = document.getElementById("sort-by").value;
 
@@ -2246,7 +2279,7 @@ function applyFilters() {
     list.sort((a, b) => (parseFloat(b.estprojectcost) || 0) - (parseFloat(a.estprojectcost) || 0));
   }
 
-  gridLimit = GRID_PAGE;
+  if (!preserveView) gridLimit = GRID_PAGE;
   updateStats(list);
   renderGrid(list);
   if (currentView === "map") renderMap(list);
@@ -2255,7 +2288,7 @@ function applyFilters() {
   const title = nbF ? `${nbF} · Developments` : `${cityLabel} · Large Developments`;
   document.getElementById("page-title").textContent = title;
   document.title = title;
-  if (map) {
+  if (map && !preserveView) {
     const nb = getNeighborhoodMapView(nbF);
     if (nb) map.setView(nb.center, nb.zoom, { animate: true });
     else {
@@ -2623,7 +2656,13 @@ function fmtCompact(n) {
 
 // Cluster bubbles: ring is a conic-gradient of the child permits' status mix, center label is
 // the number of projects it holds; homes added move to the hover tooltip.
-const STATUS_ORDER = ["issued", "complete", "review", "pending", "cancelled", "other"];
+// Derived from MAP_COLORS rather than written out again. As a second list it silently fell
+// out of sync: "expired" was added to MAP_COLORS and the legend but not here, so clusterRing
+// skipped expired children while still dividing by the full child count. A conic-gradient
+// extends its last stop to 360deg, so the ring showed no gap — it painted the expired share
+// in the wrong status colour, on 77% of clusters at zoom 12, and the Expired swatch the
+// legend advertises could never actually appear.
+const STATUS_ORDER = Object.keys(MAP_COLORS);
 function clusterRing(counts, total) {
   let acc = 0;
   const stops = [];
@@ -2634,6 +2673,10 @@ function clusterRing(counts, total) {
     acc += n;
     stops.push(`${MAP_COLORS[key]} ${from.toFixed(1)}deg ${(acc / total * 360).toFixed(1)}deg`);
   }
+  // Every child must land in a stop, or the last colour silently stretches to fill the gap
+  // and the ring misreports the mix. Cheap insurance against getStatus growing a value that
+  // MAP_COLORS doesn't carry — the exact drift that hid the expired bug.
+  if (acc !== total) console.warn(`clusterRing: ${total - acc} of ${total} unaccounted for`, counts);
   return stops.length ? `conic-gradient(${stops.join(",")})` : MAP_COLORS.other;
 }
 
@@ -2783,12 +2826,32 @@ function buildSitePopup(site, openAtPermit) {
   return wrap;
 }
 
+// Repaints only the map's own furniture — the control rail's active/busy states and the
+// legend's layer keys. Toggling an overlay used to call renderMap(getFilteredList()), which
+// rebuilt all ~5,900 markers even though not one of them had changed: 200ms of the 247ms a
+// warm zoning toggle cost, and the only 228ms long task in a normal session. The markers
+// were never the point — renderMapLegend was the one thing renderMap actually contributed,
+// so calling it directly gets a byte-identical map for ~19ms.
+function refreshMapChrome() {
+  renderMapControls();
+  renderMapLegend();
+}
+
+// One canvas renderer per overlay, created on first use and then reused. L.canvas() was
+// being called inside each draw, and removing the layer removes its polygons but leaves the
+// renderer's <canvas> parented to .leaflet-overlay-pane forever — 8MB of backing store
+// orphaned per toggle, ~254MB after 30. Invisible to performance.memory, because canvas
+// backing store lives outside the JS heap. Lazily initialised rather than module-scope
+// constants because Leaflet is deferred and `L` does not exist when this file is parsed.
+let zoningRenderer = null;
+let rezoneRenderer = null;
+
 // Draws the citywide SDOT overlay onto the existing map. Active closures use the same
 // orange as the card stripe, upcoming ones the same violet, so the map reads like the cards.
 function drawStreetWorkLayer() {
   if (!map || !streetWorkGeo) return;
   if (streetWorkLayer) { streetWorkLayer.remove(); streetWorkLayer = null; }
-  const nowMs = Date.now();
+
   const lines = [];
   for (const f of streetWorkGeo) {
     const paths = f.geometry?.paths;
@@ -2796,7 +2859,8 @@ function drawStreetWorkLayer() {
     const a = f.attributes;
     const impact = describeStreetImpact(a);
     if (!impact) continue;   // no sidewalk/lane/parking impact — same bar the badge uses
-    const upcoming = impact.startMs > nowMs;
+    // Same calendar-day comparison the badge bucketing uses — see fetchStreetActivity.
+    const upcoming = streetDayOf(impact.startMs) > seattleDay();
     const line = L.polyline(
       paths.map(path => path.map(([lon, lat]) => [lat, lon])),
       { color: upcoming ? "#a78bfa" : "#f97316", weight: 4, opacity: 0.75 }
@@ -2820,7 +2884,7 @@ async function toggleStreetWorkLayer() {
   streetWorkLayerOn = !streetWorkLayerOn;
   if (!streetWorkLayerOn) {
     if (streetWorkLayer) { streetWorkLayer.remove(); streetWorkLayer = null; }
-    renderMap(getFilteredList());
+    refreshMapChrome();
     return;
   }
   // fetchStreetWorkGeo flips streetWorkLoading synchronously, so re-rendering the rail
@@ -2830,7 +2894,7 @@ async function toggleStreetWorkLayer() {
   await pending;
   if (!streetWorkLayerOn) return;   // toggled back off while loading
   drawStreetWorkLayer();
-  renderMap(getFilteredList());
+  refreshMapChrome();
 }
 
 // Ten CATEGORY_DESC values cover all 3,627 zones, which is small enough to read as a
@@ -2872,8 +2936,10 @@ function drawZoningLayer() {
   if (zoningLayer) { zoningLayer.remove(); zoningLayer = null; }
   // 3,627 polygons is well past what Leaflet's default SVG renderer stays smooth with —
   // one <path> element each stalls panning, badly so on mobile. One shared canvas keeps it
-  // fluid. Scoped to this layer so the permit markers keep their own renderer.
-  const renderer = L.canvas({ padding: 0.3 });
+  // fluid. Scoped to this layer so the permit markers keep their own renderer, and reused
+  // across draws so switching the layer on and off doesn't orphan a canvas each time.
+  zoningRenderer = zoningRenderer || L.canvas({ padding: 0.3 });
+  const renderer = zoningRenderer;
   const shapes = [];
   for (const f of zoningGeo) {
     const rings = f.geometry?.rings;
@@ -2905,7 +2971,7 @@ async function toggleZoningLayer() {
   zoningLayerOn = !zoningLayerOn;
   if (!zoningLayerOn) {
     if (zoningLayer) { zoningLayer.remove(); zoningLayer = null; }
-    renderMap(getFilteredList());
+    refreshMapChrome();
     return;
   }
   const pending = fetchZoningGeo();   // flips zoningLoading synchronously → busy icon
@@ -2913,7 +2979,7 @@ async function toggleZoningLayer() {
   await pending;
   if (!zoningLayerOn) return;         // toggled back off while loading
   drawZoningLayer();
-  renderMap(getFilteredList());
+  refreshMapChrome();
 }
 
 // Coloured by the zone being proposed, sharing the ZONE_COLORS hues so a pending LR3
@@ -2932,7 +2998,8 @@ const REZONE_FALLBACK = "#c084fc";
 function drawRezoneLayer() {
   if (!map || !pendingRezones || !pendingRezones.length) return;
   if (rezoneLayer) { rezoneLayer.remove(); rezoneLayer = null; }
-  const renderer = L.canvas({ padding: 0.3 });
+  rezoneRenderer = rezoneRenderer || L.canvas({ padding: 0.3 });
+  const renderer = rezoneRenderer;
   const shapes = [];
   for (const z of pendingRezones) {
     const a = z.attrs;
@@ -2963,7 +3030,7 @@ function toggleRezoneLayer() {
   // No fetch here: the data already arrived alongside the permits, because the card
   // badges need it whether or not the map layer is ever switched on.
   if (rezoneLayerOn) drawRezoneLayer();
-  renderMap(getFilteredList());
+  refreshMapChrome();
 }
 
 // ── Map control rail ──────────────────────────────────────────────────────────
@@ -3142,10 +3209,21 @@ function renderMapLegend() {
 function highlightSiteMarker(p) {
   const lat = parseFloat(p.latitude), lon = parseFloat(p.longitude);
   if (!lat || !lon || !markers.length) return;
-  const target = markers.find(m => {
+  const findTarget = () => markers.find(m => {
     const ll = m.getLatLng();
     return Math.abs(ll.lat - lat) < 1e-9 && Math.abs(ll.lng - lon) < 1e-9;
   });
+
+  let target = findTarget();
+  // The recent-updates filter draws only the top-N most recently active sites, so the
+  // project you asked to see may not have a pin at all. Silently doing nothing left the user
+  // staring at an empty basemap at zoom 17. Showing the project they explicitly asked for
+  // beats preserving a view filter they didn't, so stand the filter down and redraw.
+  if (!target && recentMode) {
+    recentMode = false;
+    renderMap(getFilteredList());
+    target = findTarget();
+  }
   if (!target) return;
 
   const reveal = () => {
@@ -3173,7 +3251,19 @@ function renderMap(permits) {
   // sits behind a map control rail that does not exist until this function has run. A
   // `?view=map` deep link reaches here during initial parse, before deferred scripts
   // execute, so re-run once they have rather than throwing on an undefined `L`.
-  if (typeof L === "undefined") { whenLibsReady(() => renderMap(permits)); return; }
+  if (typeof L === "undefined") {
+    // libsSettled means "DOMContentLoaded fired", NOT "Leaflet arrived". If the deferred
+    // script 404s or fails its SRI check, DOMContentLoaded still fires, so whenLibsReady
+    // would call this back synchronously and recurse until the stack blew — leaving an empty
+    // map panel, an active-looking Map button and no error. Same shape loadAnalytics uses:
+    // wait only while there is something still to wait for, then report the failure.
+    if (!libsSettled) { libsReadyPromise.then(() => renderMap(permits)); return; }
+    const el = document.getElementById("map");
+    if (el) el.innerHTML =
+      `<div class="state-msg"><div class="icon">⚠️</div><h3>Map unavailable</h3>` +
+      `<p>Leaflet failed to load — check your connection and refresh.</p></div>`;
+    return;
+  }
   if (!map) {
     const initCenter = currentCity === "bellevue" ? [47.610, -122.200] : [47.608, -122.335];
     const initZoom   = currentCity === "bellevue" ? 13 : 12;
@@ -4050,11 +4140,22 @@ async function init() {
     // the Street Work filter, which is off by default — nothing the first paint depends on.
     // Its ArcGIS query costs up to 9.2s on a cold result cache (measured 9,196ms, against
     // 1.0-1.2s for the permit pages it races), and because it sat in this Promise.all it
-    // held the card grid at 9.0s when the data actually needed was ready at 1.5s. Re-running
-    // applyFilters when it lands paints the badges in afterwards.
+    // held the card grid at 9.0s when the data actually needed was ready at 1.5s. Repainting
+    // when it lands fills the badges in afterwards.
+    //
+    // preserveView, and gated on the generation: this can land up to 9s late, by which point
+    // the user may have paged the grid, opened a popup, panned the map, or switched city
+    // entirely. A plain applyFilters() here undid all of that. The generation check also
+    // stops a Seattle response from repainting a Bellevue view, where the data cannot even
+    // be used. Note .then runs on failure too — fetchStreetActivity catches internally — so
+    // this must be cheap and side-effect-free when nothing arrived.
     if (currentCity !== "bellevue") {
+      const streetGen = dataGeneration;
       fetchStreetActivity()
-        .then(() => { if (allPermits && allPermits.length) applyFilters(); })
+        .then(() => {
+          if (streetGen !== dataGeneration) return;
+          if (allPermits && allPermits.length) applyFilters({ preserveView: true });
+        })
         .catch(() => {});
     }
 
@@ -4113,6 +4214,7 @@ document.getElementById("filter-neighborhood").addEventListener("change", async 
 // ── City change ───────────────────────────────────────────────────────────────
 document.getElementById("filter-city").addEventListener("change", async function() {
   currentCity = this.value;
+  const gen = ++dataGeneration;   // captured below; a superseded switch discards its result
   allPermits = [];
   addressIndex = new Map();
   historyLoaded = false;
@@ -4144,26 +4246,43 @@ document.getElementById("filter-city").addEventListener("change", async function
     // the Street Work filter, which is off by default — nothing the first paint depends on.
     // Its ArcGIS query costs up to 9.2s on a cold result cache (measured 9,196ms, against
     // 1.0-1.2s for the permit pages it races), and because it sat in this Promise.all it
-    // held the card grid at 9.0s when the data actually needed was ready at 1.5s. Re-running
-    // applyFilters when it lands paints the badges in afterwards.
+    // held the card grid at 9.0s when the data actually needed was ready at 1.5s. Repainting
+    // when it lands fills the badges in afterwards.
+    //
+    // preserveView, and gated on the generation: this can land up to 9s late, by which point
+    // the user may have paged the grid, opened a popup, panned the map, or switched city
+    // entirely. A plain applyFilters() here undid all of that. The generation check also
+    // stops a Seattle response from repainting a Bellevue view, where the data cannot even
+    // be used. Note .then runs on failure too — fetchStreetActivity catches internally — so
+    // this must be cheap and side-effect-free when nothing arrived.
     if (currentCity !== "bellevue") {
+      const streetGen = dataGeneration;
       fetchStreetActivity()
-        .then(() => { if (allPermits && allPermits.length) applyFilters(); })
+        .then(() => {
+          if (streetGen !== dataGeneration) return;
+          if (allPermits && allPermits.length) applyFilters({ preserveView: true });
+        })
         .catch(() => {});
     }
 
-    [allPermits] = await Promise.all([
+    const [loaded] = await Promise.all([
       currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
       // These two stay awaited. At 313ms and 486ms they cost nothing next to the permit
       // fetch, and they drive badges that would otherwise visibly pop in a moment later.
       currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
       currentCity === "bellevue" ? Promise.resolve() : fetchPendingRezones(),
     ]);
+    // Superseded by a later city switch while we were waiting — drop this result on the
+    // floor. Assigning it would leave the wrong city's rows under the current city's title,
+    // dropdown and neighbourhood list.
+    if (gen !== dataGeneration) return;
+    allPermits = loaded;
     computeWatchChanges();
     applyFilters();
     document.getElementById("last-updated").textContent =
       `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
   } catch (err) {
+    if (gen !== dataGeneration) return;
     document.getElementById("grid-view").innerHTML =
       `<div class="state-msg"><div class="icon">⚠️</div><h3>Could not load ${cityLabel} permits</h3><p>${esc(err.message)}</p></div>`;
   }
@@ -4173,7 +4292,11 @@ document.getElementById("filter-city").addEventListener("change", async function
 
 // ── Event listeners ───────────────────────────────────────────────────────────
 ["filter-type","filter-minval","sort-by"].forEach(id =>
-  document.getElementById(id).addEventListener("change", applyFilters));
+  // Wrapped rather than passed bare: applyFilters takes an options object now, and a bare
+  // reference would hand it the Event. That happens to work (an Event has no preserveView,
+  // so it defaults to false) but only by accident, and silently stops working the day
+  // another option shares a name with an Event property.
+  document.getElementById(id).addEventListener("change", () => applyFilters()));
 
 // Toolbar buttons — wired here rather than via onclick= so no executable markup ships
 // in the HTML (see the CSP note at the top of the file).
