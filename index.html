@@ -1331,6 +1331,16 @@ let currentCity = "seattle";
 // fetches in flight and the loser wins allPermits: the app then showed 4,987 Bellevue rows
 // under a "Seattle" title with Seattle's neighbourhood list, which matches none of them.
 let dataGeneration = 0;
+// Same shape as dataGeneration, kept separate: neighborhood switches are far more frequent
+// than city switches and have no bearing on street activity or allPermits, so folding this
+// into dataGeneration would cancel an unrelated in-flight repaint every time someone browsed
+// neighborhoods. The bug this closes was found independently, twice, by two review agents:
+// the neighborhood-change handler awaited fetchSiteHistory with no generation check at all —
+// the identical shape as the already-fixed city-switch race, one handler over. Selecting
+// Ballard then Beacon Hill before Ballard's history landed left the dropdown reading "Beacon
+// Hill" while last-updated and addressIndex silently held Ballard's 3,204 records, with
+// historyLoaded left true — nothing on screen indicated the data was for the wrong place.
+let historyGeneration = 0;
 let recentMode  = false;
 let recentCount = 20;
 let streetWorkLayer   = null;   // Leaflet LayerGroup for the citywide SDOT overlay
@@ -2282,7 +2292,14 @@ function applyFilters({ preserveView = false } = {}) {
   if (!preserveView) gridLimit = GRID_PAGE;
   updateStats(list);
   renderGrid(list);
-  if (currentView === "map") renderMap(list);
+  // Street activity — preserveView's only caller — feeds streetActivityFor/streetUpcomingFor,
+  // which renderGrid reads (for the card badges) and renderMap never touches: markers carry
+  // no street-activity state. Rebuilding all ~5,900 of them here was pure waste, measured at
+  // ~200ms on the live site, to repaint a view the map isn't even showing. If a future caller
+  // passes preserveView for a filter that DOES change what's on the map, this skips a redraw
+  // it needs — there were only these two call sites when this was written, both street
+  // activity, so that trade was made deliberately rather than by accident.
+  if (currentView === "map" && !preserveView) renderMap(list);
 
   const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
   const title = nbF ? `${nbF} · Developments` : `${cityLabel} · Large Developments`;
@@ -2638,6 +2655,11 @@ const MAP_COLORS = {
   other:     "#64748b",  // grey    — unknown
 };
 
+// A second hand-written list next to MAP_COLORS is exactly what let "expired" go missing
+// from clusterRing until STATUS_ORDER was rederived from MAP_COLORS directly — and it had
+// already happened again here independently: "other" was never added, so the ~578 permits
+// getStatus() can't classify (e.g. statuscurrent "Scheduled") render a grey pin with no
+// legend entry at all. Listed last since it's the catch-all, not a real status.
 const MAP_LEGEND_ITEMS = [
   { key: "issued",    label: "In Progress" },
   { key: "complete",  label: "Completed" },
@@ -2645,6 +2667,7 @@ const MAP_LEGEND_ITEMS = [
   { key: "pending",   label: "Pending / Applied" },
   { key: "expired",   label: "Expired" },
   { key: "cancelled", label: "Cancelled" },
+  { key: "other",     label: "Other" },
 ];
 
 // Compact number for cluster labels: 2400 → "2.4k"
@@ -4186,6 +4209,7 @@ async function init() {
 // ── Neighborhood change: re-fetch site history for the selected area ──────────
 document.getElementById("filter-neighborhood").addEventListener("change", async function() {
   const nbF = this.value;
+  const gen = ++historyGeneration;
   addressIndex = new Map();
   historyLoaded = false;
   if (nbF) {
@@ -4198,6 +4222,10 @@ document.getElementById("filter-neighborhood").addEventListener("change", async 
       const bounds = NEIGHBORHOODS[nbF];
       history = await fetchSiteHistory(bounds);
     }
+    // A later selection landed first and already claimed historyGeneration — this response
+    // is for a neighborhood that's no longer selected, so applying it would silently show
+    // the wrong place's history under the current one's name.
+    if (gen !== historyGeneration) return;
     buildAddressIndex(history);
     historyLoaded = true;
     document.getElementById("last-updated").textContent =
