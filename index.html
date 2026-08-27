@@ -1205,6 +1205,19 @@ const API = "https://data.seattle.gov/resource/76t5-zqzr.json";
 // that must never be shared). Blank = shared anonymous pool, which is heavily throttled.
 const APP_TOKEN = "8TWYR3dr4BMUJcfxCbdwGw7pv";
 
+// CARTO started requiring this on their raster basemap tiles as of 2026-08 — unauthenticated
+// requests still return a real 200 PNG, just with "API KEY REQUIRED" watermarked diagonally
+// across every tile, which is why this broke without a single failed request or console error
+// anywhere. Free at carto.com/basemaps/apikey, 5M tiles/month fair use, same "public rate-limit
+// identifier, safe to commit" shape as the Socrata token above — CARTO's own docs show it used
+// client-side in a plain tile URL, not held server-side.
+const CARTO_KEY = "cb1_2d25_1_feda6198d2709521bb03ef42";
+// One builder so the initial tileLayer and the theme-swap setUrl can't drift out of sync with
+// each other, which they were two separate copies of before this.
+function cartoTileUrl(theme) {
+  return `https://{s}.basemaps.cartocdn.com/${theme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`;
+}
+
 // ── HTML escape (API data → innerHTML) ───────────────────────────────────────
 // Both quote styles are escaped on purpose. Every interpolated attribute in this file is
 // double-quoted today, so &quot; alone would be enough — but that's a convention, not a
@@ -1440,7 +1453,7 @@ function applyTheme(theme) {
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", theme === "light" ? "#f4f6fb" : "#0f1117");
   if (tileLayer) {
-    tileLayer.setUrl(`https://{s}.basemaps.cartocdn.com/${theme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`);
+    tileLayer.setUrl(cartoTileUrl(theme));
   }
   if (window.Chart) {
     const cs = getComputedStyle(document.documentElement);
@@ -3291,7 +3304,7 @@ function renderMap(permits) {
     const initCenter = currentCity === "bellevue" ? [47.610, -122.200] : [47.608, -122.335];
     const initZoom   = currentCity === "bellevue" ? 13 : 12;
     map = L.map("map").setView(initCenter, initZoom);
-    tileLayer = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${currentTheme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}{r}.png`, {
+    tileLayer = L.tileLayer(cartoTileUrl(currentTheme), {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19
     }).addTo(map);
