@@ -155,6 +155,13 @@ await cdp.send("Log.enable");
 await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
 
 const consoleErrors = [], exceptions = [], netFailures = [];
+// Basemap tiles are watched separately from everything else because they fail in a way
+// nothing else here can see. In Aug 2026 CARTO began requiring an API key and started
+// serving unauthenticated requests a real 200 OK PNG with "API KEY REQUIRED" watermarked
+// across the image — no HTTP error, no console error, no failed request. This check
+// reported CLEAN for days while the map was covered in watermarks, and a person had to
+// notice. Anything that only breaks the pixels needs an assertion about the pixels.
+const tileReqs = [];
 cdp.on(m => {
   const p = m.params;
   if (m.method === "Log.entryAdded" && p.entry.level === "error") consoleErrors.push(p.entry.text);
@@ -162,6 +169,12 @@ cdp.on(m => {
     exceptions.push(p.exceptionDetails.exception?.description || p.exceptionDetails.text);
   if (m.method === "Network.loadingFailed")
     netFailures.push(`${p.type}: ${p.errorText || p.blockedReason || "failed"}`);
+  if (m.method === "Network.requestWillBeSent" && p.request.url.includes("basemaps.cartocdn.com"))
+    tileReqs.push({ url: p.request.url, id: p.requestId, status: null });
+  if (m.method === "Network.responseReceived" && p.response.url.includes("basemaps.cartocdn.com")) {
+    const r = tileReqs.find(t => t.id === p.requestId);
+    if (r) r.status = p.response.status;
+  }
 });
 
 const evaluate = async expr => {
@@ -213,8 +226,43 @@ const data = interactive ? await evaluate(`({
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,
 })`).catch(() => null) : null;
 
+// Read the key out of the DEPLOYED page rather than hardcoding it here — one source of
+// truth, and it means this also catches the key being removed or mangled in a refresh.
+const cartoKey = await evaluate(`typeof CARTO_KEY !== "undefined" ? CARTO_KEY : null`).catch(() => null);
+
 cdp.close();
 cleanup();
+
+// ── Basemap tile check ───────────────────────────────────────────────────────
+// Deliberately NOT an absolute byte-size band: keyed tiles measured 2,349-5,787 bytes
+// across four tiles at different zooms, so any fixed threshold would either miss the
+// watermark or fire on a legitimately busy tile. Instead compare the same tile fetched
+// with and without the key. CARTO serves different bytes to authenticated and
+// unauthenticated callers, so identical responses mean our key is not being honoured —
+// which is exactly the state that produced watermarked tiles.
+const TILE_PROBE = "https://a.basemaps.cartocdn.com/dark_all/12/655/1425.png";
+let basemap = { keyPresent: !!cartoKey, checked: false };
+try {
+  const sha = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const { createHash } = await import("crypto");
+    return { hash: createHash("sha256").update(buf).digest("hex").slice(0, 16), bytes: buf.length,
+             isPng: buf.length > 8 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 };
+  };
+  const keyed = cartoKey ? await sha(`${TILE_PROBE}?key=${cartoKey}`) : null;
+  const unkeyed = await sha(TILE_PROBE);
+  basemap = {
+    keyPresent: !!cartoKey, checked: true,
+    keyedBytes: keyed?.bytes ?? null, unkeyedBytes: unkeyed.bytes,
+    keyedIsPng: keyed?.isPng ?? null,
+    // Differing responses = the key is doing something = we are not being watermarked.
+    keyHonoured: keyed ? keyed.hash !== unkeyed.hash : false,
+  };
+} catch (e) {
+  basemap = { keyPresent: !!cartoKey, checked: false, error: e.message };
+}
 
 const uniq = a => [...new Set(a)];
 const problems = [];
@@ -225,6 +273,22 @@ if (data) {
   if (data.duplicatePermitNums > 0) problems.push(`${data.duplicatePermitNums} duplicate permit numbers`);
 }
 if (analyticsState?.unavailable) problems.push("analytics reports Chart.js unavailable");
+
+// Basemap. Each of these fails silently in the browser, so they have to be asserted here.
+if (!basemap.keyPresent) problems.push("CARTO_KEY missing from the deployed page — basemap tiles will be watermarked");
+else if (basemap.checked && !basemap.keyHonoured)
+  problems.push("CARTO key is not changing the tile response — tiles are likely watermarked (or CARTO changed enforcement)");
+if (basemap.checked && basemap.keyedIsPng === false) problems.push("CARTO returned a non-PNG for a keyed tile request");
+if (interactive) {
+  if (!tileReqs.length) problems.push("map view requested no basemap tiles at all");
+  else {
+    const unkeyedReqs = tileReqs.filter(t => !t.url.includes("key="));
+    const badStatus = tileReqs.filter(t => t.status !== null && t.status !== 200);
+    if (unkeyedReqs.length) problems.push(`${unkeyedReqs.length} basemap tile request(s) sent without an API key`);
+    if (badStatus.length) problems.push(`${badStatus.length} basemap tile request(s) returned non-200`);
+  }
+}
+
 if (uniq(consoleErrors).length) problems.push(`${uniq(consoleErrors).length} console error(s)`);
 if (uniq(exceptions).length) problems.push(`${uniq(exceptions).length} uncaught exception(s)`);
 if (uniq(netFailures).length) problems.push(`${uniq(netFailures).length} failed request(s)`);
@@ -234,6 +298,8 @@ console.log(JSON.stringify({
   checkedAt: new Date().toISOString(),
   timeToInteractiveMs: interactive,
   data, map: mapState, analytics: analyticsState,
+  basemap: { ...basemap, tileRequests: tileReqs.length,
+             tilesKeyed: tileReqs.filter(t => t.url.includes("key=")).length },
   consoleErrors: uniq(consoleErrors).slice(0, 10),
   uncaughtExceptions: uniq(exceptions).slice(0, 10),
   networkFailures: uniq(netFailures).slice(0, 10),
