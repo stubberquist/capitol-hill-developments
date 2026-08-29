@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strategic Petroleum Reserve &amp; Crude Benchmarks</title>
+  <!-- Same shape as the developments viewer's policy: nothing loads by default, and the
+       only outbound connection this page is allowed to make is the EIA open-data API.
+       If a second data source is ever added it has to be named here or the fetch dies. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://api.eia.gov; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#0f1117" />
+  <link rel="icon" href="../icon-192.png" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Palette lifted from ../index.html so the two pages on this site look like one site. */
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3350;
+      --accent: #6c8ef5;
+      --accent2: #a78bfa;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --radius: 10px;
+      --chart-grid: rgba(46, 51, 80, 0.5);
+      --tooltip-bg: #22263a;
+    }
+
+    :root[data-theme="light"] {
+      --bg: #f4f6fb;
+      --surface: #ffffff;
+      --surface2: #eef1f8;
+      --border: #d8deeb;
+      --accent: #4f74e3;
+      --accent2: #8b5cf6;
+      --green: #0f9d6c;
+      --yellow: #b45309;
+      --red: #dc2626;
+      --text: #1e2430;
+      --muted: #5b677a;
+      --chart-grid: rgba(150, 160, 190, 0.35);
+      --tooltip-bg: #2c3247;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 18px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    a { color: var(--accent); }
+
+    header { margin-bottom: 14px; }
+    h1 { font-size: 21px; font-weight: 650; letter-spacing: -0.01em; }
+    .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+    .sub .sep { opacity: 0.5; margin: 0 6px; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      margin-bottom: 16px;
+    }
+    .spacer { flex: 1 1 auto; }
+
+    button {
+      font: inherit; color: var(--text); background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 6px 11px; cursor: pointer;
+    }
+    button:hover { background: var(--surface2); }
+    button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .btn-group { display: flex; gap: 4px; }
+    .btn-group .lbl { color: var(--muted); font-size: 12px; align-self: center; margin-right: 4px; }
+
+    input[type="text"], input[type="password"] {
+      font: inherit; color: var(--text); background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 6px 10px; min-width: 260px;
+    }
+
+    /* ── Panels ── */
+    .panel {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+    }
+    .panel h2 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .panel p { color: var(--muted); font-size: 13px; }
+    .panel p + p { margin-top: 8px; }
+    .panel .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+    .panel.warn { border-color: var(--yellow); }
+    .panel.err  { border-color: var(--red); }
+    .panel.err h2 { color: var(--red); }
+
+    /* ── Section headings ── */
+    h2.section {
+      font-size: 16px; font-weight: 650; margin: 26px 0 4px;
+      display: flex; align-items: baseline; gap: 10px;
+    }
+    h2.section:first-of-type { margin-top: 4px; }
+    h2.section .hint { font-size: 12px; font-weight: 400; color: var(--muted); }
+
+    /* ── Stat tiles ── */
+    .stats {
+      display: grid; gap: 10px; margin: 12px 0 4px;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    }
+    .stat {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 11px 13px;
+    }
+    .stat .num { font-size: 21px; font-weight: 650; letter-spacing: -0.02em; }
+    .stat .num.up { color: var(--green); }
+    .stat .num.down { color: var(--red); }
+    .stat .num.na { color: var(--muted); font-size: 17px; }
+    .stat .label { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+    .stat .vs { color: var(--muted); font-size: 11px; margin-top: 4px; opacity: 0.85; }
+
+    /* ── Chart grid ── */
+    .charts {
+      display: grid; gap: 12px; margin-top: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 13px 15px 15px;
+    }
+    .card.wide { grid-column: 1 / -1; }
+    .card h3 { font-size: 13.5px; font-weight: 600; }
+    .card .desc { color: var(--muted); font-size: 12px; margin: 3px 0 9px; }
+    .card .src { color: var(--muted); font-size: 11px; margin-top: 8px; opacity: 0.8; }
+    .chart-wrap { position: relative; height: 250px; }
+    .card.wide .chart-wrap { height: 300px; }
+    .chart-wrap .msg {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 12.5px; text-align: center; padding: 0 20px;
+    }
+
+    /* ── Source status table ── */
+    table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+    th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+    tr:last-child td { border-bottom: none; }
+    td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .pill.ok   { background: rgba(52,211,153,0.16); color: var(--green); }
+    .pill.warn { background: rgba(251,191,36,0.16); color: var(--yellow); }
+    .pill.bad  { background: rgba(248,113,113,0.16); color: var(--red); }
+    .pill.idle { background: var(--surface2); color: var(--muted); }
+
+    footer { color: var(--muted); font-size: 12px; margin: 26px 0 10px; }
+    footer p + p { margin-top: 6px; }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 560px) {
+      body { padding: 12px; }
+      .charts { grid-template-columns: 1fr; }
+      input[type="text"], input[type="password"] { min-width: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Strategic Petroleum Reserve &amp; Crude Benchmarks</h1>
+  <p class="sub">
+    U.S. SPR inventory and world crude prices
+    <span class="sep">·</span>Live data from the U.S. Energy Information Administration
+    <span class="sep">·</span><span id="as-of">loading…</span>
+  </p>
+</header>
+
+<div class="toolbar">
+  <div class="btn-group" role="group" aria-label="Chart time range">
+    <span class="lbl">Range</span>
+    <button data-range="1" aria-pressed="false">1Y</button>
+    <button data-range="5" class="active" aria-pressed="true">5Y</button>
+    <button data-range="10" aria-pressed="false">10Y</button>
+    <button data-range="0" aria-pressed="false">Max</button>
+  </div>
+  <div class="spacer"></div>
+  <button id="btn-refresh" title="Discard the cached responses and re-fetch from EIA">↻ Refresh</button>
+  <button id="btn-key" title="Set or replace the EIA API key this browser uses">API key</button>
+  <button id="btn-theme" title="Switch light/dark theme">◐</button>
+</div>
+
+<!-- Shown when there is no usable API key, and again if EIA rejects the one we have. -->
+<section class="panel warn hidden" id="setup">
+  <h2 id="setup-title">An EIA API key is needed to load data</h2>
+  <p id="setup-msg">
+    This dashboard reads directly from the EIA open-data API in your browser, which requires a
+    free API key. Registration takes about a minute and the key arrives by email.
+  </p>
+  <p>
+    <a href="https://www.eia.gov/opendata/register.php" target="_blank" rel="noopener noreferrer">Register for a free EIA key →</a>
+    The key is stored only in this browser's local storage. It is never sent anywhere except
+    <span class="mono">api.eia.gov</span>.
+  </p>
+  <div class="row">
+    <input type="password" id="key-input" placeholder="Paste your EIA API key" aria-label="EIA API key" autocomplete="off" spellcheck="false" />
+    <button id="key-save">Save &amp; load</button>
+    <button id="key-clear" class="hidden">Forget stored key</button>
+  </div>
+</section>
+
+<section class="panel err hidden" id="fatal">
+  <h2>Could not load data</h2>
+  <p id="fatal-msg"></p>
+</section>
+
+<main id="dash" class="hidden">
+
+  <h2 class="section">Strategic Petroleum Reserve <span class="hint">United States · weekly · thousand barrels reported by EIA</span></h2>
+  <div class="stats" id="spr-stats"></div>
+
+  <div class="charts">
+    <div class="card wide">
+      <h3>SPR Crude Oil Inventory · Full History</h3>
+      <p class="desc">Every weekly reading EIA has published, from the reserve's fill in the 1980s through today. Ignores the range selector — the point of this one is the whole arc.</p>
+      <div class="chart-wrap"><canvas id="chart-spr-history" aria-label="SPR crude oil inventory, full weekly history" role="img"></canvas><div class="msg" id="msg-spr-history">loading…</div></div>
+      <p class="src">Series WCSSTUS1 · EIA Weekly Petroleum Status Report</p>
+    </div>
+
+    <div class="card">
+      <h3>Weekly Change · Fill vs. Draw</h3>
+      <p class="desc">Barrels added or released each week over the last two years. Green bars are deliveries into the reserve, red bars are sales, exchanges, or emergency releases.</p>
+      <div class="chart-wrap"><canvas id="chart-spr-change" aria-label="Weekly change in SPR inventory" role="img"></canvas><div class="msg" id="msg-spr-change">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Refill Progress Since the 2022 Drawdown</h3>
+      <p class="desc">The reserve against the level it held before the 2022 releases (dashed). The gap is what a full restoration still has to cover.</p>
+      <div class="chart-wrap"><canvas id="chart-refill" aria-label="SPR level since 2021 against its pre-drawdown level" role="img"></canvas><div class="msg" id="msg-refill">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Government vs. Commercial Crude Stocks</h3>
+      <p class="desc">The strategic reserve alongside commercial crude held by refiners and traders, which EIA reports separately and which moves on ordinary market logic rather than policy.</p>
+      <div class="chart-wrap"><canvas id="chart-spr-vs-comm" aria-label="SPR versus commercial crude stocks" role="img"></canvas><div class="msg" id="msg-spr-vs-comm">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Days of Net-Import Cover</h3>
+      <p class="desc">How long the reserve alone could replace net crude imports, at each week's four-week average import rate. The metric the IEA's 90-day obligation is written in.</p>
+      <div class="chart-wrap"><canvas id="chart-cover" aria-label="Days of net import cover provided by the SPR" role="img"></canvas><div class="msg" id="msg-cover">loading…</div></div>
+      <p class="src">SPR stocks ÷ net crude imports (WCRNTUS2), four-week average</p>
+    </div>
+  </div>
+
+  <h2 class="section">Crude Benchmarks <span class="hint">daily spot prices · US dollars per barrel</span></h2>
+  <div class="stats" id="price-stats"></div>
+
+  <div class="charts">
+    <div class="card wide">
+      <h3>Brent vs. WTI Spot Prices</h3>
+      <p class="desc">The two benchmarks that price most of the world's crude: Brent for waterborne barrels traded internationally, WTI for the US mid-continent at Cushing, Oklahoma.</p>
+      <div class="chart-wrap"><canvas id="chart-benchmarks" aria-label="Brent and WTI daily spot prices" role="img"></canvas><div class="msg" id="msg-benchmarks">loading…</div></div>
+      <p class="src">Series RBRTE (Brent) and RWTC (WTI Cushing) · EIA spot prices</p>
+    </div>
+
+    <div class="card">
+      <h3>Brent − WTI Spread</h3>
+      <p class="desc">What Atlantic-basin crude fetches over the US benchmark. It widens when US barrels are hard to move to the coast and narrows when export capacity catches up.</p>
+      <div class="chart-wrap"><canvas id="chart-spread" aria-label="Brent minus WTI price spread" role="img"></canvas><div class="msg" id="msg-spread">loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Did They Sell High and Buy Low?</h3>
+      <p class="desc">SPR inventory against the WTI price on the same weeks. The 2022 releases went out into an expensive market; the refill has been buying into a cheaper one.</p>
+      <div class="chart-wrap"><canvas id="chart-spr-vs-wti" aria-label="SPR inventory against WTI price" role="img"></canvas><div class="msg" id="msg-spr-vs-wti">loading…</div></div>
+    </div>
+  </div>
+
+  <h2 class="section">Data Sources <span class="hint">every series this page requests, and what came back</span></h2>
+  <div class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Series</th><th>What it is</th><th>Frequency</th>
+          <th class="num">Rows</th><th>Latest</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="source-rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer>
+  <p>
+    Data: U.S. Energy Information Administration open-data API, fetched live in your browser and
+    cached for six hours. EIA publishes the weekly petroleum status report on Wednesdays at
+    10:30 a.m. Eastern; spot prices lag by a few business days.
+  </p>
+  <p>
+    Coverage note: this dashboard tracks the U.S. reserve only. Other IEA members hold public
+    stocks too — Japan, Korea, Germany, Spain and China among them — but none publish a
+    key-free, browser-readable feed the way EIA does. See the README in this folder for what a
+    multi-country build would take.
+  </p>
+</footer>
+
+<script defer src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js" integrity="sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=" crossorigin="anonymous"></script>
+<script>
+"use strict";
+
+// ── Configuration ─────────────────────────────────────────────────────────────
+//
+// EIA's open-data API requires a key on every request. There is no key-free,
+// CORS-enabled source for these series, so the key has to come from somewhere:
+//
+//   1. ?key=… in the URL   — consumed once, moved into local storage, stripped
+//                            from the address bar so it doesn't survive in
+//                            history or get pasted into a shared link
+//   2. local storage       — whatever the visitor last saved
+//   3. EIA_API_KEY below   — bake a key in here to make the page work for every
+//                            visitor with no setup. It IS public once committed;
+//                            EIA keys are free, per-email and rate-limited, so
+//                            that is a normal trade for a public dashboard, but
+//                            it is your call, which is why it ships empty.
+const EIA_API_KEY = "";
+
+const EIA_BASE  = "https://api.eia.gov/v2/";
+const PAGE_SIZE = 5000;           // EIA's per-request maximum
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const CACHE_PREFIX = "spr-dash.cache.";
+const KEY_STORAGE  = "spr-dash.eia-key";
+const THEME_STORAGE = "spr-dash.theme";
+
+// The SPR's design capacity. Held as a documented constant rather than derived,
+// because it is a physical property of the salt caverns, not something in the
+// data. The all-time peak shown beside it IS computed, so if this number drifts
+// out of date the tile next to it still tells the truth.
+const DESIGN_CAPACITY_MBBL = 727000;   // thousand barrels
+
+// Every series the page requests. `required: true` means the dashboard cannot
+// render without it; anything else degrades to a note in its own card and a row
+// in the Data Sources table, so a series ID that EIA renames shows up as one
+// clearly-labelled gap instead of a blank page.
+const SERIES = {
+  spr: {
+    route: "petroleum/stoc/wstk", freq: "weekly", id: "WCSSTUS1", start: "1980-01-01",
+    label: "Crude oil stocks in the SPR", units: "thousand barrels", required: true,
+  },
+  commercial: {
+    route: "petroleum/stoc/wstk", freq: "weekly", id: "WCESTUS1", start: "1980-01-01",
+    label: "Commercial crude stocks, excluding SPR", units: "thousand barrels",
+  },
+  netImports: {
+    route: "petroleum/move/wkly", freq: "weekly", id: "WCRNTUS2", start: "1990-01-01",
+    label: "Net crude oil imports", units: "thousand barrels per day",
+  },
+  wti: {
+    route: "petroleum/pri/spt", freq: "daily", id: "RWTC", start: "1986-01-01",
+    label: "WTI Cushing spot price, FOB", units: "$/barrel", required: true,
+  },
+  brent: {
+    route: "petroleum/pri/spt", freq: "daily", id: "RBRTE", start: "1987-05-01",
+    label: "Europe Brent spot price, FOB", units: "$/barrel", required: true,
+  },
+};
+
+// ── Small helpers ─────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+const nf = (n, d = 1) => n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtMM   = (kbbl, d = 1) => nf(kbbl / 1000, d) + " MMbbl";     // thousand bbl → million bbl
+const fmtMMs  = (kbbl, d = 2) => (kbbl >= 0 ? "+" : "−") + nf(Math.abs(kbbl) / 1000, d) + " MMbbl";
+const fmtUsd  = (v, d = 2) => "$" + nf(v, d);
+const fmtUsds = v => (v >= 0 ? "+" : "−") + "$" + nf(Math.abs(v), 2);
+const fmtPct  = (v, d = 1) => (v < 0 ? "−" : "") + nf(Math.abs(v), d) + "%";
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+/** "2024-03-08" → "Mar 2024". ISO strings are sliced, never Date-parsed, so a
+ *  browser in UTC−8 doesn't render a Friday reading as the previous Thursday. */
+const fmtMonthYear = iso => MONTHS[+iso.slice(5, 7) - 1] + " " + iso.slice(0, 4);
+const fmtDay       = iso => MONTHS[+iso.slice(5, 7) - 1] + " " + +iso.slice(8, 10) + ", " + iso.slice(0, 4);
+
+/** ISO date `years` before `iso`, for range filtering. Lexicographic string
+ *  comparison then does the filtering, which is exact for ISO-8601. */
+function isoMinusYears(iso, years) {
+  if (!years) return "0000-01-01";
+  const y = +iso.slice(0, 4) - years;
+  return String(y).padStart(4, "0") + iso.slice(4);
+}
+function isoPlusDays(iso, days) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// ── API key ───────────────────────────────────────────────────────────────────
+let apiKey = "";
+
+function loadApiKey() {
+  const params = new URLSearchParams(location.search);
+  const fromUrl = params.get("key");
+  if (fromUrl) {
+    store(KEY_STORAGE, fromUrl);
+    // Drop it from the address bar: a key in the URL ends up in history, in
+    // bookmarks, and in whatever the visitor pastes to a colleague.
+    params.delete("key");
+    const q = params.toString();
+    history.replaceState(null, "", location.pathname + (q ? "?" + q : "") + location.hash);
+    return fromUrl;
+  }
+  return read(KEY_STORAGE) || EIA_API_KEY || "";
+}
+
+// Storage can throw outright in private windows and embedded webviews, so every
+// access is guarded — a browser that refuses to remember the key should still
+// render the dashboard for this session.
+function read(k)      { try { return localStorage.getItem(k); } catch { return null; } }
+function store(k, v)  { try { localStorage.setItem(k, v); } catch {} }
+function drop(k)      { try { localStorage.removeItem(k); } catch {} }
+
+// ── Response cache ────────────────────────────────────────────────────────────
+function cacheKey(spec) { return CACHE_PREFIX + spec.id + "." + spec.freq + "." + spec.start; }
+
+function cacheGet(spec) {
+  const raw = read(cacheKey(spec));
+  if (!raw) return null;
+  try {
+    const { ts, rows } = JSON.parse(raw);
+    if (!Array.isArray(rows) || Date.now() - ts > CACHE_TTL_MS) return null;
+    return rows.map(([t, v]) => ({ t, v }));
+  } catch { return null; }
+}
+
+function cacheSet(spec, rows) {
+  // Stored as [date, value] pairs rather than objects: the daily price series
+  // runs to ~10k readings and the key-per-row form roughly doubles that.
+  const payload = JSON.stringify({ ts: Date.now(), rows: rows.map(r => [r.t, r.v]) });
+  if (payload.length > 2e6) return;   // don't spend the whole storage quota on one series
+  store(cacheKey(spec), payload);
+}
+
+function cacheClear() {
+  try {
+    Object.keys(localStorage)
+      .filter(k => k.startsWith(CACHE_PREFIX))
+      .forEach(k => localStorage.removeItem(k));
+  } catch {}
+}
+
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+class AuthError extends Error {}
+
+/** One EIA series, paged to completion, oldest reading first. */
+async function fetchSeries(spec) {
+  const cached = cacheGet(spec);
+  if (cached) return { rows: cached, cached: true };
+
+  const rows = [];
+  let offset = 0, total = Infinity, guard = 0;
+
+  while (rows.length < total && guard++ < 20) {
+    const p = new URLSearchParams();
+    p.set("api_key", apiKey);
+    p.set("frequency", spec.freq);
+    p.set("data[0]", "value");
+    p.set("facets[series][]", spec.id);
+    p.set("start", spec.start);
+    p.set("sort[0][column]", "period");
+    p.set("sort[0][direction]", "asc");
+    p.set("offset", String(offset));
+    p.set("length", String(PAGE_SIZE));
+
+    const res = await fetch(EIA_BASE + spec.route + "/data/?" + p.toString());
+    const body = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      // EIA reports a bad key as 403, and that is worth telling apart from a
+      // genuine outage: one is fixed by pasting a new key, the other isn't.
+      const msg = (body && (body.error || (body.response && body.response.error))) ||
+                  ("HTTP " + res.status);
+      if (res.status === 403 || /api_key|api key/i.test(String(msg))) throw new AuthError(String(msg));
+      throw new Error(String(msg));
+    }
+    if (!body || !body.response) throw new Error("unexpected response shape");
+
+    const page = body.response.data || [];
+    total = Number(body.response.total);
+    if (!Number.isFinite(total)) total = rows.length + page.length;
+
+    for (const r of page) {
+      const v = Number(r.value);
+      if (r.period && Number.isFinite(v)) rows.push({ t: String(r.period).slice(0, 10), v });
+    }
+    if (page.length === 0) break;
+    offset += page.length;
+  }
+
+  rows.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+  cacheSet(spec, rows);
+  return { rows, cached: false };
+}
+
+/** Fetches every series, recording per-series outcome instead of failing as a
+ *  batch. A missing optional series costs one card, not the page. */
+async function loadAll() {
+  const names = Object.keys(SERIES);
+  const results = await Promise.all(names.map(async name => {
+    const spec = SERIES[name];
+    try {
+      const { rows, cached } = await fetchSeries(spec);
+      if (!rows.length) return [name, { rows: [], status: "empty", note: "no readings returned" }];
+      return [name, { rows, status: "ok", cached }];
+    } catch (e) {
+      if (e instanceof AuthError) throw e;      // one bad key fails everything; say so once
+      return [name, { rows: [], status: "error", note: e.message || String(e) }];
+    }
+  }));
+  return Object.fromEntries(results);
+}
+
+// ── Series maths ──────────────────────────────────────────────────────────────
+const last = rows => (rows.length ? rows[rows.length - 1] : null);
+const since = (rows, cutoff) => rows.filter(r => r.t >= cutoff);
+
+/** Lines up several series on the union of their dates, leaving a null wherever
+ *  one has no reading. Brent and WTI keep different market holidays, so aligning
+ *  by array index instead of by date would slide them apart by a day or two. */
+function unionize(seriesList) {
+  const dates = new Set();
+  seriesList.forEach(rows => rows.forEach(r => dates.add(r.t)));
+  const labels = [...dates].sort();
+  const maps = seriesList.map(rows => new Map(rows.map(r => [r.t, r.v])));
+  return { labels, cols: maps.map(m => labels.map(t => (m.has(t) ? m.get(t) : null))) };
+}
+
+/** Caps how many points reach Chart.js. The daily benchmarks run past 10,000
+ *  readings and a canvas 900px wide cannot show more than about one per pixel,
+ *  so drawing them all costs render time for detail nobody can see. The last
+ *  point is always kept — it is the one the eye goes to. */
+function thin(labels, cols, maxPoints = 900) {
+  if (labels.length <= maxPoints) return { labels, cols };
+  const stride = Math.ceil(labels.length / maxPoints);
+  const keep = [];
+  for (let i = 0; i < labels.length; i += stride) keep.push(i);
+  if (keep[keep.length - 1] !== labels.length - 1) keep.push(labels.length - 1);
+  return { labels: keep.map(i => labels[i]), cols: cols.map(c => keep.map(i => c[i])) };
+}
+
+/** Trailing n-period mean, emitted only once there are n readings to average. */
+function trailingMean(rows, n) {
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < rows.length; i++) {
+    sum += rows[i].v;
+    if (i >= n) sum -= rows[i - n].v;
+    if (i >= n - 1) out.push({ t: rows[i].t, v: sum / n });
+  }
+  return out;
+}
+
+/** For each date in `base`, the most recent `other` reading at or before it.
+ *  Used to hang daily prices off weekly stock readings. */
+function asOf(base, other) {
+  const out = [];
+  let j = 0, held = null;
+  for (const b of base) {
+    while (j < other.length && other[j].t <= b.t) held = other[j++].v;
+    out.push(held);
+  }
+  return out;
+}
+
+// ── Derived statistics ────────────────────────────────────────────────────────
+//
+// The 2022 releases began in earnest that spring; the window below is deliberately
+// generous at the front so the "level before the drawdown" reading is a real
+// plateau rather than one lucky week.
+const PRE_DRAWDOWN_FROM = "2021-01-01";
+const DRAWDOWN_FROM     = "2022-01-01";
+const PACE_WEEKS        = 26;
+
+function sprStats(spr, cover) {
+  const cur = last(spr);
+  if (!cur) return null;
+
+  const prev  = spr.length > 1 ? spr[spr.length - 2] : null;
+  const yrAgo = spr.length > 52 ? spr[spr.length - 53] : null;
+
+  const peak = spr.reduce((a, r) => (r.v > a.v ? r : a), spr[0]);
+
+  const preRows = spr.filter(r => r.t >= PRE_DRAWDOWN_FROM && r.t < DRAWDOWN_FROM);
+  const preLevel = preRows.length ? preRows.reduce((a, r) => (r.v > a.v ? r : a), preRows[0]) : null;
+
+  const postRows = since(spr, DRAWDOWN_FROM);
+  const trough = postRows.length ? postRows.reduce((a, r) => (r.v < a.v ? r : a), postRows[0]) : null;
+
+  // Pace over the last half-year rather than week to week: single weeks swing on
+  // delivery scheduling and say nothing about the trajectory.
+  const paceFrom = spr.length > PACE_WEEKS ? spr[spr.length - 1 - PACE_WEEKS] : null;
+  const pace = paceFrom ? (cur.v - paceFrom.v) / PACE_WEEKS : null;   // thousand bbl per week
+
+  let projection = null;
+  if (preLevel && cur.v >= preLevel.v) {
+    projection = "restored";
+  } else if (preLevel && pace && pace > 0) {
+    const weeks = (preLevel.v - cur.v) / pace;
+    projection = weeks > 52 * 75 ? "beyond this century" : fmtMonthYear(isoPlusDays(cur.t, Math.round(weeks * 7)));
+  }
+
+  return {
+    current: cur,
+    weekChange: prev ? cur.v - prev.v : null,
+    yearChange: yrAgo ? cur.v - yrAgo.v : null,
+    pctCapacity: (cur.v / DESIGN_CAPACITY_MBBL) * 100,
+    peak,
+    fromPeak: ((cur.v - peak.v) / peak.v) * 100,
+    preLevel, trough,
+    refilled: trough ? cur.v - trough.v : null,
+    gapToPre: preLevel ? preLevel.v - cur.v : null,
+    pace, projection,
+    cover: last(cover),
+  };
+}
+
+function priceStats(brent, wti) {
+  const b = last(brent), w = last(wti);
+  if (!b || !w) return null;
+
+  const ytdOf = rows => {
+    const jan = rows.find(r => r.t >= last(rows).t.slice(0, 4) + "-01-01");
+    return jan && jan.v ? ((last(rows).v - jan.v) / jan.v) * 100 : null;
+  };
+  const yearOf = rows => {
+    const win = since(rows, isoMinusYears(last(rows).t, 1));
+    return win.length ? { lo: Math.min(...win.map(r => r.v)), hi: Math.max(...win.map(r => r.v)) } : null;
+  };
+
+  // The spread has to come from a day both benchmarks priced, not from two
+  // "latest" readings that might be different days.
+  const wtiMap = new Map(wti.map(r => [r.t, r.v]));
+  let spread = null, spreadOn = null;
+  for (let i = brent.length - 1; i >= 0 && i > brent.length - 15; i--) {
+    if (wtiMap.has(brent[i].t)) { spread = brent[i].v - wtiMap.get(brent[i].t); spreadOn = brent[i].t; break; }
+  }
+
+  return { brent: b, wti: w, brentYtd: ytdOf(brent), wtiYtd: ytdOf(wti),
+           spread, spreadOn, brentYear: yearOf(brent) };
+}
+
+// ── Chart plumbing ────────────────────────────────────────────────────────────
+const charts = {};
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+/** Replaces the "loading…" overlay on a card, or clears it once a chart draws. */
+function setMsg(id, text) {
+  const el = $("msg-" + id.replace(/^chart-/, ""));
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("hidden", !text);
+}
+
+/** datasets: [{ label, data, color, colors?, type?, fill?, dash?, yAxisID? }]
+ *  opts:     { fmt, y1: {fmt}, zero, legend, tooltipFmt } */
+function makeChart(id, type, labels, datasets, opts = {}) {
+  const el = $(id);
+  if (!el) return;
+  if (!window.Chart) { setMsg(id, "Chart.js did not load — check your connection and reload."); return; }
+
+  if (charts[id]) charts[id].destroy();
+  const { fmt, y1 = null, zero = false, legend = datasets.length > 1 } = opts;
+
+  const ds = datasets.map(d => ({
+    label: d.label,
+    data: d.data,
+    type: d.type || type,
+    borderColor: d.colors || d.color,
+    backgroundColor: d.colors || (d.fill ? d.color + "22" : d.color),
+    borderWidth: (d.type || type) === "bar" ? 0 : 1.8,
+    borderDash: d.dash || undefined,
+    fill: !!d.fill,
+    pointRadius: 0,
+    pointHitRadius: 8,
+    tension: 0.15,
+    spanGaps: true,
+    yAxisID: d.yAxisID || "y",
+  }));
+
+  const valueTicks = f => (f ? { callback: v => f(v) } : {});
+
+  charts[id] = new Chart(el, {
+    type,
+    data: { labels, datasets: ds },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: legend, labels: { boxWidth: 12, usePointStyle: true, pointStyle: "circle" } },
+        tooltip: {
+          backgroundColor: cssVar("--tooltip-bg"), borderColor: cssVar("--border"), borderWidth: 1,
+          titleColor: "#e2e8f0", bodyColor: "#e2e8f0", padding: 10, displayColors: true,
+          callbacks: {
+            title: items => (items.length ? fmtDay(String(items[0].label)) : ""),
+            label: ctx => {
+              const f = (y1 && ctx.dataset.yAxisID === "y1") ? y1.fmt : fmt;
+              const v = ctx.parsed.y;
+              if (v === null || v === undefined) return null;
+              return (ctx.dataset.label ? ctx.dataset.label + ": " : "") + (f ? f(v) : v.toLocaleString());
+            },
+          },
+        },
+      },
+      scales: {
+        // Category axis with ISO labels, so the page needs no date adapter on top
+        // of Chart.js. Ticks are relabelled to "Mon YYYY" and thinned by Chart.js.
+        x: {
+          grid: { display: false },
+          ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0,
+                   callback(v, i) { const l = this.getLabelForValue(v); return l ? fmtMonthYear(String(l)) : ""; } },
+        },
+        y: { beginAtZero: zero, ticks: valueTicks(fmt) },
+        ...(y1 ? { y1: { position: "right", beginAtZero: false, grid: { drawOnChartArea: false }, ticks: valueTicks(y1.fmt) } } : {}),
+      },
+    },
+  });
+  setMsg(id, null);
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+function tile(num, label, vs, cls) {
+  return `<div class="stat"><div class="num ${cls || ""}">${num}</div>` +
+         `<div class="label">${label}</div>` + (vs ? `<div class="vs">${vs}</div>` : "") + `</div>`;
+}
+const dir = v => (v > 0 ? "up" : v < 0 ? "down" : "");
+
+function renderSprStats(s) {
+  if (!s) { $("spr-stats").innerHTML = tile("—", "SPR inventory unavailable", "", "na"); return; }
+
+  const parts = [
+    tile(fmtMM(s.current.v), "SPR inventory", "week ending " + fmtDay(s.current.t)),
+    s.weekChange === null ? tile("—", "Weekly change", "", "na")
+      : tile(fmtMMs(s.weekChange), "Weekly change", "vs. the prior week", dir(s.weekChange)),
+    s.yearChange === null ? tile("—", "52-week change", "", "na")
+      : tile(fmtMMs(s.yearChange, 1), "52-week change", "vs. one year ago", dir(s.yearChange)),
+    tile(fmtPct(s.pctCapacity), "Of design capacity", DESIGN_CAPACITY_MBBL / 1000 + " MMbbl across four salt-dome sites"),
+    tile(fmtPct(s.fromPeak), "Below the all-time peak", "peak " + fmtMM(s.peak.v) + " · " + fmtMonthYear(s.peak.t), dir(s.fromPeak)),
+    s.cover ? tile(nf(s.cover.v, 0) + " days", "Net-import cover", "SPR alone, at the 4-week average import rate")
+            : tile("n/a", "Net-import cover", "import series unavailable", "na"),
+  ];
+
+  if (s.trough && s.refilled !== null) {
+    parts.push(tile(fmtMMs(s.refilled, 1), "Refilled since the trough",
+                    "trough " + fmtMM(s.trough.v) + " · " + fmtMonthYear(s.trough.t), dir(s.refilled)));
+  }
+  if (s.projection === "restored") {
+    parts.push(tile("Restored", "Pre-drawdown level", "back above its 2021 level"));
+  } else if (s.projection) {
+    parts.push(tile(s.projection, "Pre-drawdown level regained",
+                    "if the last " + PACE_WEEKS + " weeks' pace of " + fmtMMs(s.pace, 2) + "/wk holds"));
+  } else if (s.gapToPre !== null) {
+    parts.push(tile(fmtMM(s.gapToPre), "Still short of 2021", "no net refill over the last " + PACE_WEEKS + " weeks", "na"));
+  }
+
+  $("spr-stats").innerHTML = parts.join("");
+}
+
+function renderPriceStats(p) {
+  if (!p) { $("price-stats").innerHTML = tile("—", "Price series unavailable", "", "na"); return; }
+  const ytd = v => (v === null ? "" : (v >= 0 ? "+" : "−") + fmtPct(Math.abs(v)) + " year to date");
+  $("price-stats").innerHTML = [
+    tile(fmtUsd(p.brent.v), "Brent", fmtDay(p.brent.t)),
+    tile(fmtUsd(p.wti.v), "WTI Cushing", fmtDay(p.wti.t)),
+    p.spread === null ? tile("—", "Brent − WTI spread", "", "na")
+      : tile(fmtUsds(p.spread), "Brent − WTI spread", fmtDay(p.spreadOn), dir(p.spread)),
+    p.brentYtd === null ? tile("—", "Brent change", "", "na")
+      : tile(ytd(p.brentYtd).split(" year")[0], "Brent, year to date", "since the first quote of the year", dir(p.brentYtd)),
+    p.brentYear ? tile(fmtUsd(p.brentYear.lo, 0) + "–" + fmtUsd(p.brentYear.hi, 0), "Brent 52-week range", "low and high of the last year")
+                : tile("—", "Brent 52-week range", "", "na"),
+  ].join("");
+}
+
+function renderSources(data) {
+  const pill = r => {
+    if (r.status === "ok") return '<span class="pill ok">ok</span>';
+    if (r.status === "empty") return '<span class="pill warn">no rows</span>';
+    return '<span class="pill bad">failed</span>';
+  };
+  $("source-rows").innerHTML = Object.keys(SERIES).map(name => {
+    const spec = SERIES[name], r = data[name] || { status: "error", rows: [], note: "not requested" };
+    const latest = last(r.rows);
+    return `<tr>
+      <td class="mono">${spec.id}</td>
+      <td>${spec.label}<br><span style="color:var(--muted)">${spec.units}</span></td>
+      <td>${spec.freq}</td>
+      <td class="num">${r.rows.length ? r.rows.length.toLocaleString() : "—"}</td>
+      <td>${latest ? fmtDay(latest.t) : "—"}</td>
+      <td>${pill(r)}${r.note ? ' <span style="color:var(--muted)">' + r.note + "</span>" : ""}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ── Charts ────────────────────────────────────────────────────────────────────
+let RANGE = 5;      // years; 0 = everything
+let DATA = null;
+
+function rangeCut(rows) { return rows.length ? isoMinusYears(last(rows).t, RANGE) : "0000-01-01"; }
+
+function renderCharts(data) {
+  const spr   = data.spr.rows;
+  const comm  = data.commercial.rows;
+  const wti   = data.wti.rows;
+  const brent = data.brent.rows;
+  const cover = data.cover;
+
+  const money  = v => "$" + nf(v, 0);
+  const mmbbl  = v => nf(v / 1000, 0);
+  const mmbblD = v => nf(v / 1000, 1);
+
+  // Full history — deliberately outside the range selector.
+  if (spr.length) {
+    const t = thin(spr.map(r => r.t), [spr.map(r => r.v)]);
+    makeChart("chart-spr-history", "line", t.labels,
+      [{ label: "SPR", data: t.cols[0], color: cssVar("--accent"), fill: true }],
+      { fmt: mmbbl, legend: false });
+  } else {
+    setMsg("chart-spr-history", "SPR series unavailable — see Data Sources below.");
+  }
+
+  // Weekly deltas, last two years, coloured by direction.
+  if (spr.length > 1) {
+    const win = spr.slice(-105);
+    const deltas = win.slice(1).map((r, i) => ({ t: r.t, v: r.v - win[i].v }));
+    const green = cssVar("--green"), red = cssVar("--red");
+    makeChart("chart-spr-change", "bar", deltas.map(d => d.t),
+      [{ label: "Weekly change", data: deltas.map(d => d.v), color: green,
+         colors: deltas.map(d => (d.v >= 0 ? green : red)) }],
+      { fmt: v => nf(v / 1000, 1), legend: false });
+  } else {
+    setMsg("chart-spr-change", "SPR series unavailable.");
+  }
+
+  // Refill against the pre-drawdown plateau.
+  const stats = DATA && DATA.stats;
+  if (spr.length && stats && stats.preLevel) {
+    const win = since(spr, PRE_DRAWDOWN_FROM);
+    makeChart("chart-refill", "line", win.map(r => r.t), [
+      { label: "SPR", data: win.map(r => r.v), color: cssVar("--accent"), fill: true },
+      { label: "Pre-drawdown level", data: win.map(() => stats.preLevel.v), color: cssVar("--muted"), dash: [5, 4] },
+    ], { fmt: mmbbl });
+  } else if (spr.length) {
+    setMsg("chart-refill", "Not enough history before 2022 to draw a pre-drawdown level.");
+  } else {
+    setMsg("chart-refill", "SPR series unavailable.");
+  }
+
+  // Government vs commercial.
+  if (spr.length && comm.length) {
+    const cut = rangeCut(spr);
+    const u = unionize([since(spr, cut), since(comm, cut)]);
+    const t = thin(u.labels, u.cols);
+    makeChart("chart-spr-vs-comm", "line", t.labels, [
+      { label: "Strategic reserve", data: t.cols[0], color: cssVar("--accent") },
+      { label: "Commercial stocks", data: t.cols[1], color: cssVar("--accent2") },
+    ], { fmt: mmbbl });
+  } else {
+    setMsg("chart-spr-vs-comm", comm.length ? "SPR series unavailable." : "Commercial stock series unavailable — see Data Sources below.");
+  }
+
+  // Days of cover.
+  if (cover.length) {
+    const win = since(cover, rangeCut(cover));
+    const t = thin(win.map(r => r.t), [win.map(r => r.v)]);
+    makeChart("chart-cover", "line", t.labels,
+      [{ label: "Days of cover", data: t.cols[0], color: cssVar("--yellow"), fill: true }],
+      { fmt: v => nf(v, 0), legend: false });
+  } else {
+    setMsg("chart-cover", "Needs both the SPR and net-import series — see Data Sources below.");
+  }
+
+  // Benchmarks and spread.
+  if (brent.length && wti.length) {
+    const cut = isoMinusYears(last(brent).t, RANGE);
+    const u = unionize([since(brent, cut), since(wti, cut)]);
+    const t = thin(u.labels, u.cols);
+    makeChart("chart-benchmarks", "line", t.labels, [
+      { label: "Brent", data: t.cols[0], color: cssVar("--accent") },
+      { label: "WTI", data: t.cols[1], color: cssVar("--green") },
+    ], { fmt: money });
+
+    const spread = u.cols[0].map((b, i) => (b === null || u.cols[1][i] === null ? null : b - u.cols[1][i]));
+    const ts = thin(u.labels, [spread]);
+    makeChart("chart-spread", "line", ts.labels,
+      [{ label: "Brent − WTI", data: ts.cols[0], color: cssVar("--accent2"), fill: true }],
+      { fmt: v => "$" + nf(v, 0), legend: false });
+  } else {
+    setMsg("chart-benchmarks", "Price series unavailable — see Data Sources below.");
+    setMsg("chart-spread", "Price series unavailable.");
+  }
+
+  // Inventory against price, on the SPR's own weekly dates.
+  if (spr.length && wti.length) {
+    const win = since(spr, rangeCut(spr));
+    const px = asOf(win, wti);
+    makeChart("chart-spr-vs-wti", "line", win.map(r => r.t), [
+      { label: "SPR", data: win.map(r => r.v), color: cssVar("--accent") },
+      { label: "WTI", data: px, color: cssVar("--green"), yAxisID: "y1" },
+    ], { fmt: mmbblD, y1: { fmt: money } });
+  } else {
+    setMsg("chart-spr-vs-wti", "Needs both the SPR and WTI series — see Data Sources below.");
+  }
+}
+
+/** Days of cover: the reserve divided by what the country actually has to
+ *  replace. Weeks where net imports are zero or negative — the US exports more
+ *  crude than it takes in — have no meaningful answer, so they are dropped
+ *  rather than drawn as a spike to infinity. */
+function computeCover(spr, netImports) {
+  if (!spr.length || !netImports.length) return [];
+  const avg = trailingMean(netImports, 4);
+  const aligned = asOf(spr, avg);
+  return spr
+    .map((r, i) => ({ t: r.t, v: aligned[i] && aligned[i] > 0 ? r.v / aligned[i] : null }))
+    .filter(r => r.v !== null);
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+let theme = read(THEME_STORAGE) ||
+  (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t === "light" ? "light" : "";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", t === "light" ? "#f4f6fb" : "#0f1117");
+  if (window.Chart) {
+    Chart.defaults.color = cssVar("--muted");
+    Chart.defaults.borderColor = cssVar("--chart-grid");
+  }
+}
+
+// ── Panels ────────────────────────────────────────────────────────────────────
+function showSetup(title, msg) {
+  const p = $("setup");
+  if (title) $("setup-title").textContent = title;
+  if (msg) $("setup-msg").textContent = msg;
+  p.classList.remove("hidden");
+  $("key-clear").classList.toggle("hidden", !read(KEY_STORAGE));
+  $("key-input").focus();
+}
+
+function showFatal(msg) {
+  $("fatal-msg").textContent = msg;
+  $("fatal").classList.remove("hidden");
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+let loading = false;
+
+async function boot() {
+  if (loading) return;
+  apiKey = loadApiKey();
+
+  if (!apiKey) {
+    $("dash").classList.add("hidden");
+    $("as-of").textContent = "waiting for an API key";
+    showSetup();
+    return;
+  }
+
+  loading = true;
+  $("setup").classList.add("hidden");
+  $("fatal").classList.add("hidden");
+  $("dash").classList.remove("hidden");
+  $("btn-refresh").disabled = true;
+  $("as-of").textContent = "loading…";
+
+  try {
+    const data = await loadAll();
+
+    const cover  = computeCover(data.spr.rows, data.netImports.rows);
+    const stats  = sprStats(data.spr.rows, cover);
+    const pstats = priceStats(data.brent.rows, data.wti.rows);
+    DATA = Object.assign({}, data, { cover, stats, pstats });
+
+    renderSprStats(stats);
+    renderPriceStats(pstats);
+    renderSources(data);
+    renderCharts(DATA);
+
+    const bits = [];
+    if (stats) bits.push("SPR through " + fmtDay(stats.current.t));
+    if (pstats) bits.push("prices through " + fmtDay(pstats.brent.t));
+    $("as-of").textContent = bits.length ? bits.join(" · ") : "no data returned";
+
+    // Every series failing at once is a network or outage story, not five
+    // separate ones — say it plainly instead of leaving eight empty cards.
+    if (Object.keys(SERIES).every(n => data[n].status !== "ok")) {
+      showFatal("EIA returned no usable data for any series. The API may be down, or the " +
+                "key may be over its rate limit. The Data Sources table below has the detail.");
+    }
+  } catch (e) {
+    if (e instanceof AuthError) {
+      $("dash").classList.add("hidden");
+      $("as-of").textContent = "API key rejected";
+      showSetup("EIA rejected that API key", "The key was refused: " + e.message +
+                ". Check it for stray spaces, or register a new one.");
+    } else {
+      $("as-of").textContent = "load failed";
+      showFatal((e && e.message) || String(e));
+    }
+  } finally {
+    loading = false;
+    $("btn-refresh").disabled = false;
+  }
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  if (window.Chart) Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  applyTheme(theme);
+
+  document.querySelectorAll("[data-range]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      RANGE = Number(btn.dataset.range);
+      document.querySelectorAll("[data-range]").forEach(b => {
+        const on = b === btn;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-pressed", String(on));
+      });
+      if (DATA) renderCharts(DATA);
+    });
+  });
+
+  $("btn-theme").addEventListener("click", () => {
+    theme = theme === "light" ? "dark" : "light";
+    store(THEME_STORAGE, theme);
+    applyTheme(theme);
+    if (DATA) renderCharts(DATA);   // Chart.js bakes colours in at construction time
+  });
+
+  $("btn-refresh").addEventListener("click", () => { cacheClear(); boot(); });
+
+  $("btn-key").addEventListener("click", () => {
+    $("key-input").value = "";
+    showSetup("Set the EIA API key for this browser",
+              "Paste a key to replace the one this browser is using. It is stored locally and " +
+              "sent only to api.eia.gov.");
+  });
+
+  $("key-save").addEventListener("click", () => {
+    const v = $("key-input").value.trim();
+    if (!v) { $("key-input").focus(); return; }
+    store(KEY_STORAGE, v);
+    apiKey = v;
+    $("key-input").value = "";
+    $("setup").classList.add("hidden");
+    cacheClear();
+    boot();
+  });
+
+  $("key-input").addEventListener("keydown", e => { if (e.key === "Enter") $("key-save").click(); });
+
+  $("key-clear").addEventListener("click", () => {
+    drop(KEY_STORAGE);
+    cacheClear();
+    apiKey = "";
+    $("key-clear").classList.add("hidden");
+    boot();
+  });
+
+  boot();
+});
+
+// Test hook: the smoke test in this folder drives the page against a stubbed
+// api.eia.gov and reads the computed figures back through here.
+window.__dash = {
+  boot,
+  charts,
+  SERIES,
+  get data() { return DATA; },
+  get range() { return RANGE; },
+};
+</script>
+</body>
+</html>
