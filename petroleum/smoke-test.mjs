@@ -170,7 +170,8 @@ async function newPage(opts = {}) {
   await ctx.route("**://api.eia.gov/**", async route => {
     const url = new URL(route.request().url());
     const q = url.searchParams;
-    requests.push({ path: url.pathname, series: q.get("facets[series][]"), offset: +q.get("offset"), length: +q.get("length") });
+    requests.push({ path: url.pathname, series: q.get("facets[series][]"), key: q.get("api_key"),
+                    offset: +q.get("offset"), length: +q.get("length") });
 
     if (opts.badKey) {
       return route.fulfill({ status: 403, contentType: "application/json",
@@ -362,24 +363,41 @@ console.log("\n▸ A key EIA rejects");
   await ctx.close();
 }
 
-// ── 4. First visit, no key ────────────────────────────────────────────────────
-console.log("\n▸ First visit with no key at all");
+// ── 4. First visit with nothing in local storage ──────────────────────────────
+//
+// What should happen depends on how the page is deployed, so the expectation is
+// read from the source rather than assumed: with EIA_API_KEY left empty a first
+// visit must onboard, and with a key baked in it must just work. Both are valid
+// configurations and the suite has to pass in either.
+const bakedKey = (/const EIA_API_KEY = "([^"]*)"/.exec(await readFile(join(HERE, "index.html"), "utf8")) || [, ""])[1];
+console.log(`\n▸ First visit, nothing stored (page ships ${bakedKey ? "WITH" : "without"} a baked-in key)`);
 {
   const { page, ctx, errors, requests } = await newPage();
   await page.goto(ORIGIN);
   await settled(page);
 
-  check("onboarding is shown", await page.locator("#setup").isVisible());
-  check("no pointless request is made without a key", requests.length === 0);
-  check("the registration link points at EIA",
-        (await page.locator('#setup a').getAttribute("href")).startsWith("https://www.eia.gov/opendata/register"));
+  if (bakedKey) {
+    check("the dashboard loads with no setup step", !(await page.locator("#dash").isHidden()));
+    check("onboarding stays out of the way", await page.locator("#setup").isHidden());
+    check("the baked-in key is the one sent to EIA",
+          requests.length > 0 && requests.every(r => r.key === bakedKey));
+  } else {
+    check("onboarding is shown", await page.locator("#setup").isVisible());
+    check("no pointless request is made without a key", requests.length === 0);
+    check("the registration link points at EIA",
+          (await page.locator("#setup a").getAttribute("href")).startsWith("https://www.eia.gov/opendata/register"));
+  }
 
-  // Pasting a key is the whole point of the panel — check it actually loads.
+  // A pasted key must win over whatever the page shipped with, so a visitor who
+  // brings their own is not silently sharing the published key's rate limit.
+  if (bakedKey) await page.click("#btn-key");
   await page.fill("#key-input", "PASTED-KEY");
   await page.click("#key-save");
   await page.waitForFunction(() => window.__dash.data);
+  const after = requests.filter(r => r.key === "PASTED-KEY");
   check("pasting a key loads the dashboard", !(await page.locator("#dash").isHidden()));
-  check("the pasted key is used on the wire", requests.length > 0);
+  check("a pasted key takes precedence over the baked-in one", after.length > 0,
+        `${after.length} requests carried the pasted key`);
   check("no console errors", errors.length === 0, errors.slice(0, 3).join(" | "));
   await ctx.close();
 }

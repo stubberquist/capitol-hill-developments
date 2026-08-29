@@ -19,10 +19,23 @@ arrives by email), then give it to the page one of three ways:
 | The **API key** button | Same thing, typed rather than pasted into a URL. |
 | `EIA_API_KEY` in `index.html` | Baked in, so the page works for every visitor with no setup. |
 
-The third option makes the key public the moment it is committed. EIA keys are
-free, tied to an email and rate-limited per key, so publishing one is a normal
-trade for a public dashboard — but it is a real choice, which is why the constant
-ships empty and the page onboards visitors instead.
+The third option makes the key public the moment it is committed: this repository
+is public, so the key is world-readable in the source and stays in the git history
+for good. EIA keys are free, tied to an email and rate-limited per key, so
+publishing one is a normal trade for a public dashboard — but it is a real choice,
+which is why the constant ships empty and the page onboards visitors instead.
+
+**Rotating a published key.** Register a new one and replace the constant. Do not
+bother rewriting history to remove the old value: anything ever pushed to a public
+repository should be treated as disclosed, and the old key is only revoked once
+EIA issues you a new one. A visitor who pastes their own key in the panel always
+overrides the baked-in one, so they never share its rate limit.
+
+If publishing a key is not acceptable, the alternative is to stop fetching in the
+browser for this data: hold the key as an Actions secret, fetch server-side in the
+weekly workflow, and bake the numbers into the page the way `refresh-market-data.sh`
+already does for the developments viewer. That keeps the key private and removes
+the visitor's setup step, at the cost of live updates.
 
 [reg]: https://www.eia.gov/opendata/register.php
 
@@ -86,6 +99,11 @@ anything showing `failed` or `no rows` needs its ID or route corrected in
 ```
 node smoke-test.mjs        # from this folder; add KEEP_OPEN=1 to leave the browser up
 ```
+
+The suite reads `EIA_API_KEY` out of the page and adapts: with it empty a first
+visit must onboard and issue no requests, and with a key baked in it must load
+straight away and send that key. Both configurations pass, so pasting a key in
+does not break the tests.
 
 Drives the real page in Chromium against a stubbed `api.eia.gov`, using synthetic
 series shaped like the real ones — the 1980s fill, the plateau, the 2022 drawdown,
