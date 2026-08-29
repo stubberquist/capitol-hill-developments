@@ -722,7 +722,7 @@ function makeChart(id, type, labels, datasets, opts = {}) {
         // of Chart.js. Ticks are relabelled to "Mon YYYY" and thinned by Chart.js.
         x: {
           grid: { display: false },
-          ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0,
+          ticks: { maxTicksLimit: 8, autoSkip: true, autoSkipPadding: 16, maxRotation: 0,
                    callback(v, i) { const l = this.getLabelForValue(v); return l ? fmtMonthYear(String(l)) : ""; } },
         },
         y: { beginAtZero: zero, ticks: valueTicks(fmt) },
@@ -841,7 +841,7 @@ function renderCharts(data) {
     makeChart("chart-spr-change", "bar", deltas.map(d => d.t),
       [{ label: "Weekly change", data: deltas.map(d => d.v), color: green,
          colors: deltas.map(d => (d.v >= 0 ? green : red)) }],
-      { fmt: v => nf(v / 1000, 1), legend: false });
+      { fmt: v => nf(v / 1000, 1), legend: false, zero: true });
   } else {
     setMsg("chart-spr-change", "SPR series unavailable.");
   }
