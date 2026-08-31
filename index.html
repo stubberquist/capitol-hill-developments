@@ -1413,7 +1413,11 @@ function saveJSON(key, value) {
 // layer is toggled. Persisted separately from chd-state because that one is also mirrored
 // into the URL, and whether you've folded the legend away isn't part of what you'd share
 // in a link — it's a per-device viewing preference, like the theme.
-let legendCollapsed = loadJSON("chd-legend-collapsed", false) === true;
+// Defaults to collapsed: the map is the point, and with all three overlays on the legend
+// covers a good chunk of it. The `=== true` matters — loadJSON's ?? only substitutes the
+// fallback for null/undefined, so someone who has explicitly expanded it has `false` stored
+// and keeps their choice; only a visitor with nothing stored gets the collapsed default.
+let legendCollapsed = loadJSON("chd-legend-collapsed", true) === true;
 
 let watchedOnly = false;
 let streetWorkOnly = false;
