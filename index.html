@@ -409,9 +409,12 @@
       overflow: hidden;
     }
 
+    /* The swatches live in their own wrapper so the collapse header can sit outside the
+       column flow. Before this, .leg-sec were direct children of #map-legend and the
+       header would have become just another flex item flowing into the columns. */
     /* Sections flow top-to-bottom, then start a new column when they hit the height cap.
        Each .leg-sec stays whole, so a title never separates from its swatches. */
-    #map-legend.multicol {
+    #map-legend .leg-body.multicol {
       display: flex;
       flex-flow: column wrap;
       align-content: flex-start;
@@ -420,15 +423,46 @@
     #map-legend .leg-sec + .leg-sec .leg-title { margin-top: 8px; }
     /* In columns each section already starts at the top of its own column, so the
        stacking margin would only add a ragged offset. */
-    #map-legend.multicol .leg-sec + .leg-sec .leg-title { margin-top: 0; }
+    #map-legend .leg-body.multicol .leg-sec + .leg-sec .leg-title { margin-top: 0; }
 
     /* Last resort on very short viewports, where even columns overflow. Scrolling needs
        pointer events, which the legend otherwise declines so drags over it pan the map. */
-    #map-legend.scrollable {
+    #map-legend .leg-body.scrollable {
       overflow: auto;
       pointer-events: auto;
       scrollbar-width: thin;
     }
+
+    /* The whole header is the hit target, not just the chevron. pointer-events has to be
+       re-enabled here specifically: #map-legend declines them so a drag across it pans the
+       map underneath, and that inherits down to every child. */
+    .leg-toggle {
+      pointer-events: auto;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      background: none;
+      border: none;
+      padding: 0;
+      margin: 0;
+      font: inherit;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 700;
+      color: var(--muted);
+      text-align: left;
+    }
+    .leg-toggle:hover { color: var(--text); }
+    .leg-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+    .leg-chevron { transition: transform 0.15s ease; display: inline-block; font-size: 9px; }
+    @media (prefers-reduced-motion: reduce) { .leg-chevron { transition: none; } }
+    #map-legend.collapsed .leg-chevron { transform: rotate(-90deg); }
+    #map-legend.collapsed .leg-body { display: none; }
+    /* Only pay for the gap when there's something under the header. */
+    #map-legend:not(.collapsed) .leg-toggle { margin-bottom: 7px; }
 
     #map-legend .leg-title {
       font-size: 10px;
@@ -908,16 +942,18 @@
     @media (max-width: 640px) {
       #map { height: 65vh; min-height: 400px; }
 
-      /* Status swatches flow as a wrapped row instead of a 5-tall stack */
       #map-legend {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 3px 10px;
         padding: 8px 10px;
         bottom: 20px;
         left: 10px;
         max-width: none;
+      }
+      /* Status swatches flow as a wrapped row instead of a 5-tall stack */
+      #map-legend .leg-body {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 3px 10px;
       }
       /* The section wrappers exist for the desktop column layout. Here they'd each become
          one flex item and stack into tall blocks, so they dissolve and the rows go back to
@@ -930,7 +966,7 @@
 
       /* Columns are a desktop answer to a tall narrow panel; at this width the legend is
          already full-bleed, so it keeps wrapping rows and scrolls if that's still too tall. */
-      #map-legend.multicol { flex-flow: row wrap; align-content: normal; gap: 3px 10px; }
+      #map-legend .leg-body.multicol { flex-flow: row wrap; align-content: normal; gap: 3px 10px; }
 
       /* Comfortable tap targets on touch, and room for bubbles on a narrow map */
       .mc-icon { width: 38px; height: 38px; font-size: 15px; }
@@ -1371,6 +1407,13 @@ function loadJSON(key, fallback) {
 function saveJSON(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private browsing */ }
 }
+
+// Module-level, not a class on the element: renderMapLegend destroys and rebuilds the
+// legend on every map render, so anything stored on the DOM node is lost the next time a
+// layer is toggled. Persisted separately from chd-state because that one is also mirrored
+// into the URL, and whether you've folded the legend away isn't part of what you'd share
+// in a link — it's a per-device viewing preference, like the theme.
+let legendCollapsed = loadJSON("chd-legend-collapsed", false) === true;
 
 let watchedOnly = false;
 let streetWorkOnly = false;
@@ -3217,25 +3260,48 @@ function renderMapLegend() {
 
   const legend = document.createElement("div");
   legend.id = "map-legend";
-  legend.innerHTML = sections.map(s => `<div class="leg-sec">${s}</div>`).join("");
+  if (legendCollapsed) legend.classList.add("collapsed");
+  legend.innerHTML =
+    `<button type="button" class="leg-toggle" aria-expanded="${!legendCollapsed}" aria-controls="leg-body">` +
+      `<span class="leg-chevron" aria-hidden="true">▾</span><span>Legend</span>` +
+    `</button>` +
+    `<div class="leg-body" id="leg-body">` +
+      sections.map(s => `<div class="leg-sec">${s}</div>`).join("") +
+    `</div>`;
   mapEl.appendChild(legend);
+
+  legend.querySelector(".leg-toggle").addEventListener("click", (e) => {
+    // The map is listening for clicks too — without this, collapsing the legend also
+    // closes the open map-control bubbles behind it.
+    e.stopPropagation();
+    legendCollapsed = !legendCollapsed;
+    saveJSON("chd-legend-collapsed", legendCollapsed);
+    renderMapLegend();
+  });
+
+  if (legendCollapsed) return;   // nothing to measure while the body is display:none
 
   // Stop short of the control rail above. Measured, not assumed: renderMapControls runs
   // first, so the rail is in the DOM and its height already accounts for however many
   // controls are currently visible (Bellevue hides two of them). The constant is the
   // rail's own 10px top offset, the legend's 24px bottom offset, and a 14px gap.
   const rail = document.getElementById("map-ctrls");
-  const cap = (mapEl.clientHeight || 600) - (rail?.offsetHeight || 0) - 48;
-  legend.style.maxHeight = `${cap}px`;
+  const body = legend.querySelector(".leg-body");
+  // The cap applies to the body, so the header's own height comes off it first — otherwise
+  // the legend would end up taller than the space measured for it by exactly that much.
+  const header = legend.querySelector(".leg-toggle");
+  const chrome = (header?.offsetHeight || 0) + 7;   // + the header's margin-bottom
+  const cap = (mapEl.clientHeight || 600) - (rail?.offsetHeight || 0) - 48 - chrome;
+  body.style.maxHeight = `${cap}px`;
 
   // Too tall for one column — flow into two or more instead of scrolling. Scrolling was
   // the first fix and it did keep the buttons clear, but with both overlays on it pushed
   // the entire Proposed-rezone key below the fold: the layer you just switched on became
   // the one whose colours you couldn't read. Columns keep every swatch on screen.
-  if (legend.scrollHeight > cap) {
-    legend.classList.add("multicol");
+  if (body.scrollHeight > cap) {
+    body.classList.add("multicol");
     // Belt and braces for very short viewports, where even columns can overflow.
-    if (legend.scrollWidth > legend.clientWidth + 1) legend.classList.add("scrollable");
+    if (body.scrollWidth > body.clientWidth + 1) body.classList.add("scrollable");
   }
 }
 
