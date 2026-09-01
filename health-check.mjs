@@ -249,7 +249,9 @@ try {
     const buf = Buffer.from(await res.arrayBuffer());
     const { createHash } = await import("crypto");
     return { hash: createHash("sha256").update(buf).digest("hex").slice(0, 16), bytes: buf.length,
-             isPng: buf.length > 8 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 };
+             // Full 4-byte signature. This checked bytes 1-3 ("PNG") but not byte 0 (0x89),
+             // so a body that happened to carry those three characters would pass.
+             isPng: buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 };
   };
   const keyed = cartoKey ? await sha(`${TILE_PROBE}?key=${cartoKey}`) : null;
   const unkeyed = await sha(TILE_PROBE);
@@ -275,6 +277,14 @@ if (data) {
 if (analyticsState?.unavailable) problems.push("analytics reports Chart.js unavailable");
 
 // Basemap. Each of these fails silently in the browser, so they have to be asserted here.
+// An exception in the probe used to vanish: this section only fed `problems` when
+// `checked === true`, and `basemap.error` was written into the output JSON but never
+// asserted on. A probe that threw — CDN edge refusing a bare Node fetch, a DNS blip, CARTO
+// switching from watermarking to hard-rejecting — silently downgraded to "not checked" and
+// the run still printed CLEAN. That is precisely the failure this whole check exists to
+// prevent, one level removed: reporting healthy while the assertion never actually ran.
+if (!basemap.checked)
+  problems.push(`basemap probe could not run (${basemap.error || "unknown"}) — tile watermarking unverified`);
 if (!basemap.keyPresent) problems.push("CARTO_KEY missing from the deployed page — basemap tiles will be watermarked");
 else if (basemap.checked && !basemap.keyHonoured)
   problems.push("CARTO key is not changing the tile response — tiles are likely watermarked (or CARTO changed enforcement)");

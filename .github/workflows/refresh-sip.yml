@@ -2,7 +2,14 @@ name: Refresh Embedded Data (SIP index + market data + pending rezones)
 
 on:
   schedule:
-    - cron: '0 14 * * 1'  # Every Monday at 6am PT (14:00 UTC)
+    # Monday 05:00 UTC = Sunday 22:00 PT. Deliberately AHEAD of the weekly review, which runs
+    # at 00:27 PT (07:27 UTC) Monday. It used to run at 14:00 UTC, six and a half hours AFTER
+    # the review, which meant the review always profiled the previous week's baked constants,
+    # a broken refresh had a full week before the review would notice, and any follow-up work
+    # from the review collided with the refresh push mid-session (it did, on 2026-08-24, and
+    # needed a rebase). GitHub's scheduler runs this job 27-57 minutes late in practice, so
+    # 05:00 still leaves ~1.5h of clearance before the review starts.
+    - cron: '0 5 * * 1'
   workflow_dispatch:       # Allow manual trigger from GitHub UI
 
 # A manual run overlapping the Monday cron would have both jobs commit and push the same
@@ -38,23 +45,6 @@ jobs:
 
       - name: Build weekly digest (whats-new.html + feed.xml)
         run: bash build-whats-new.sh
-
-      # The three baked constants above grow every week and nothing was watching. index.html
-      # went 264 KB -> 278 KB raw (72 -> 77 KB gzipped) in a fortnight without anyone
-      # noticing. Gzipped is the number that matters — it's what users actually download.
-      # Warn well before it hurts; the whole page is one request on the critical path.
-      - name: Check page size budget
-        run: |
-          BUDGET=102400   # 100 KB gzipped
-          SIZE=$(gzip -c index.html | wc -c)
-          RAW=$(wc -c < index.html)
-          echo "index.html: $RAW bytes raw, $SIZE bytes gzipped (budget $BUDGET)"
-          if [ "$SIZE" -gt "$BUDGET" ]; then
-            echo "::error::index.html is $SIZE bytes gzipped, over the $BUDGET budget."
-            exit 1
-          fi
-          # Surface the trend even when it passes, so growth is visible in the run log.
-          echo "::notice::Page size $((SIZE * 100 / BUDGET))% of budget ($SIZE / $BUDGET bytes gzipped)"
 
       # The refresh scripts rewrite three constants inside the app's only script tag by regex.
       # They are well guarded — each aborts unless it replaced exactly once and the payload
@@ -123,6 +113,35 @@ jobs:
           if [ "$CODE" -eq 2 ]; then echo "::warning::Health check could not run (exit 2) — site status unknown"; exit 0; fi
           echo "::error::Live site is serving this build but the page is broken (exit $CODE)"
           exit 1
+
+      # Deliberately the LAST step, and deliberately `if: always()`. This used to sit before
+      # "Commit if changed" and end in a bare `exit 1`, which meant crossing the budget would
+      # abort the job BEFORE committing — the refreshed SIP index, market data and rezone
+      # index would all be thrown away, and the weekly data refresh would simply stop landing
+      # until someone noticed the failed run. A guardrail for slow drift must never be able to
+      # halt the pipeline it is watching. Running it last means the data has already shipped
+      # by the time size is judged.
+      #
+      # Two thresholds now, because one number was doing two jobs. SOFT is the "this is
+      # drifting, do something about it eventually" signal and only warns. HARD is a genuine
+      # ceiling where the page is big enough to hurt on mobile, and that still fails the job
+      # loudly — but after the deploy, so it costs a red run and an issue, not the data.
+      - name: Check page size budget
+        if: always()
+        run: |
+          SOFT=102400   # 100 KB gzipped — warn
+          HARD=153600   # 150 KB gzipped — fail
+          SIZE=$(gzip -c index.html | wc -c)
+          RAW=$(wc -c < index.html)
+          echo "index.html: $RAW bytes raw, $SIZE bytes gzipped (soft $SOFT / hard $HARD)"
+          echo "::notice::Page size $SIZE bytes gzipped — $((SIZE * 100 / SOFT))% of the ${SOFT}-byte soft budget"
+          if [ "$SIZE" -gt "$HARD" ]; then
+            echo "::error::index.html is $SIZE bytes gzipped, past the $HARD hard ceiling."
+            exit 1
+          fi
+          if [ "$SIZE" -gt "$SOFT" ]; then
+            echo "::warning::index.html is $SIZE bytes gzipped, over the $SOFT soft budget. Worth trimming — hard ceiling is $HARD."
+          fi
 
       - name: Open issue on failure
         if: failure()
