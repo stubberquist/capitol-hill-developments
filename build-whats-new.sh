@@ -66,7 +66,10 @@ with open(sea_path) as f:
             "value": float(r.get("estprojectcost") or 0),
             "units": int(float(r.get("housingunitsadded") or 0)),
             "date": (r.get("applieddate") or "")[:10],
-            "url": f"https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId={quote(r.get('permitnum',''), safe='')}",
+            # Deep-link into the tracker rather than the city portal: the tracker has the map,
+            # the site history, the watch button and the land-use status. The portal link is
+            # still one click away from the permit's modal.
+            "url": f"index.html?permit={quote(r.get('permitnum',''), safe='')}",
         })
 with open(bel_path) as f:
     for feat in json.load(f).get("features", []):

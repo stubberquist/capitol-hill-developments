@@ -590,6 +590,9 @@
       cursor: help;
     }
     .lu-status.lu-stuck { color: #fb923c; }
+    .rp-link { cursor: pointer; border-radius: 4px; }
+    .rp-link:hover, .rp-link:focus-visible { background: var(--surface2); outline: none; }
+    .rp-link:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
     .modal .lu-status, .modal-body .lu-status { margin: -4px 0 10px; }
 
     /* Dashed, unlike the solid MHA badge next to it: this describes proposed legislation,
@@ -1204,6 +1207,7 @@
     <button id="btn-grid" class="active">⊞ Cards</button>
     <button id="btn-map">⊕ Map</button>
     <button id="btn-analytics">∿ Analytics</button>
+    <button id="btn-copylink" title="Copy a link to exactly this view — filters, neighborhood, map layers and all">⧉ Link</button>
     <button id="btn-theme" title="Switch light/dark theme">◐</button>
   </div>
 </div>
@@ -1452,11 +1456,36 @@ const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); 
 const watchStatusPrev = loadJSON("chd-watch-status", {});
 let watchChanges = {};  // permitnum → previous status key, computed once per data load
 
+// Watching is by SITE, not permit number. Starring 6711221-CN at 1833 Broadway also watches
+// its demolition permit, a future revision, and any phased sibling: a "proposed tower" runs
+// MUP → DM → CN/PH and the watchlist should follow all of it, not just the one you clicked.
+// The stored list is still permit numbers so existing watchlists keep working; the set of
+// watched sites is derived from it whenever it or the data changes.
+let watchedSites = new Set();
+function rebuildWatchedSites() {
+  watchedSites = new Set(allPermits.filter(p => watchlist.has(p.permitnum)).map(normalizeAddr).filter(Boolean));
+}
+function isWatched(p) {
+  return watchlist.has(p.permitnum) || (watchedSites.size > 0 && watchedSites.has(normalizeAddr(p)));
+}
 function toggleWatch(pn) {
-  if (watchlist.has(pn)) watchlist.delete(pn); else watchlist.add(pn);
+  const p = allPermits.find(x => x.permitnum === pn);
+  if (p && isWatched(p) && !watchlist.has(pn)) {
+    // Clicking a sibling that is only watched via its site means "stop watching this site":
+    // drop every stored permit at that address, not just this one.
+    const addr = normalizeAddr(p);
+    for (const x of allPermits) if (watchlist.has(x.permitnum) && normalizeAddr(x) === addr) watchlist.delete(x.permitnum);
+  } else if (watchlist.has(pn)) {
+    watchlist.delete(pn);
+  } else {
+    watchlist.add(pn);
+  }
   saveJSON("chd-watchlist", [...watchlist]);
+  rebuildWatchedSites();
   snapshotWatchStatuses();
-  applyFilters();
+  // preserveView: starring a card on page 3 shouldn't throw you back to page 1, and starring
+  // from a map popup shouldn't rebuild the markers underneath it and close the popup.
+  applyFilters({ preserveView: true });
 }
 
 function toggleWatchedFilter() {
@@ -1509,16 +1538,17 @@ function isNewSinceVisit(p) {
 
 function snapshotWatchStatuses() {
   const snap = { ...watchStatusPrev };
-  allPermits.forEach(p => { if (p.permitnum && watchlist.has(p.permitnum)) snap[p.permitnum] = getStatus(p); });
+  allPermits.forEach(p => { if (p.permitnum && isWatched(p)) snap[p.permitnum] = getStatus(p); });
   saveJSON("chd-watch-status", snap);
 }
 
 // Diff watched permits against the last visit's statuses, then take a fresh snapshot
 function computeWatchChanges() {
+  rebuildWatchedSites();   // allPermits has just changed under us
   watchChanges = {};
   allPermits.forEach(p => {
     const prev = watchStatusPrev[p.permitnum];
-    if (watchlist.has(p.permitnum) && prev && prev !== getStatus(p)) watchChanges[p.permitnum] = prev;
+    if (isWatched(p) && prev && prev !== getStatus(p)) watchChanges[p.permitnum] = prev;
   });
   snapshotWatchStatuses();
 }
@@ -2520,6 +2550,7 @@ function applyFilters({ preserveView = false } = {}) {
   if (!preserveView) gridLimit = GRID_PAGE;
   updateStats(list);
   renderGrid(list);
+  syncState();   // the URL and localStorage always describe what's on screen
   // Street activity — preserveView's only caller — feeds streetActivityFor/streetUpcomingFor,
   // which renderGrid reads (for the card badges) and renderMap never touches: markers carry
   // no street-activity state. Rebuilding all ~5,900 of them here was pure waste, measured at
@@ -2676,7 +2707,7 @@ function renderGrid(permits) {
         <span style="display:flex;align-items:center;gap:6px;flex-shrink:0">
           ${isNewSinceVisit(p) ? `<span class="chip-new" title="Filed or issued since your last visit">NEW</span>` : ""}
           ${changedFrom ? `<span class="chip-changed" title="Was ${statusLabel(changedFrom)} on your last visit">CHANGED</span>` : ""}
-          <button class="star-btn${watchlist.has(rawNum) ? " starred" : ""}" data-pn="${num}" title="${watchlist.has(rawNum) ? "Stop watching" : "Watch this project"}">${watchlist.has(rawNum) ? "★" : "☆"}</button>
+          <button class="star-btn${isWatched(p) ? " starred" : ""}" data-pn="${num}" title="${isWatched(p) ? "Stop watching" : "Watch this project"}">${isWatched(p) ? "★" : "☆"}</button>
           <span class="badge ${status}">${statusLabel(status)}</span>
         </span>
       </div>
@@ -2824,7 +2855,7 @@ function openModal(pn) {
     <div class="modal-sub">
       <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
       &nbsp;<span class="badge ${status}">${statusLabel(status)}</span>
-      <button class="star-btn${watchlist.has(rawNum) ? " starred" : ""}" data-pn="${num}">${watchlist.has(rawNum) ? "★" : "☆"}</button>
+      <button class="star-btn${isWatched(p) ? " starred" : ""}" data-pn="${num}">${isWatched(p) ? "★" : "☆"}</button>
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
@@ -2843,7 +2874,7 @@ function openModal(pn) {
     </div>
     ${related.length ? `<div class="related-permits">
       <h4>${historyLoaded ? "Site history at this address" : "Other loaded permits at this address"}</h4>
-      ${related.map(r => `<div class="rp-row">
+      ${related.map(r => `<div class="rp-row rp-link" data-pn="${esc(r.permitnum || "")}" role="button" tabindex="0" title="Open this permit">
         <span style="font-family:monospace">${esc(r.permitnum || "—")}</span>
         <span>${esc(getPermitTypeLabel(r).label)}</span>
         <span>${fmtDate(r.issueddate || r.applieddate)}</span>
@@ -2892,11 +2923,20 @@ document.getElementById("grid-view").addEventListener("click", e => {
 });
 document.getElementById("modal-backdrop").addEventListener("click", e => {
   if (e.target.closest(".modal-close")) { closeModal(); return; }
+  // "Other permits at this address" rows used to be inert spans — from a 571-unit tower's
+  // modal you couldn't open its 440-unit sibling without closing and searching for it.
+  const rp = e.target.closest(".rp-link");
+  if (rp && rp.dataset.pn) { openModal(rp.dataset.pn); return; }
   const star = e.target.closest(".star-btn");
   if (star) {
     toggleWatch(star.dataset.pn);
-    star.classList.toggle("starred");
-    star.textContent = star.classList.contains("starred") ? "★" : "☆";
+    // Recompute rather than blindly toggling the class: unstarring a site-watched sibling
+    // removes a DIFFERENT permit from the list, and the optimistic flip would show the
+    // wrong state.
+    const p = allPermits.find(x => x.permitnum === star.dataset.pn);
+    const on = p ? isWatched(p) : false;
+    star.classList.toggle("starred", on);
+    star.textContent = on ? "★" : "☆";
     return;
   }
   if (e.target.id === "modal-backdrop") closeModal();
@@ -3032,6 +3072,7 @@ function permitPopupBody(p) {
   return `
       <div class="card-header" style="margin-bottom:8px;padding-right:24px">
         <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
+        <button class="star-btn${isWatched(p) ? " starred" : ""}" data-pn="${num}" title="${isWatched(p) ? "Stop watching this site" : "Watch this site"}">${isWatched(p) ? "★" : "☆"}</button>
         <span class="badge ${status}">${statusLabel(status)}</span>
       </div>
       <div class="card-address" style="margin-bottom:6px">${addr}</div>
@@ -3121,6 +3162,7 @@ function buildSitePopup(site, openAtPermit) {
 function refreshMapChrome() {
   renderMapControls();
   renderMapLegend();
+  syncState();   // layers= in the URL follows the toggles
 }
 
 // One canvas renderer per overlay, created on first use and then reused. L.canvas() was
@@ -3341,6 +3383,7 @@ const MAP_CONTROLS = [
       recentMode = o.value > 0;
       if (o.value > 0) recentCount = o.value;
       renderMap(getFilteredList());
+      syncState();
     },
   },
   {
@@ -3581,6 +3624,18 @@ function renderMap(permits) {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19
     }).addTo(map);
+
+    // Overlays a deep link asked for. Deferred a tick so this renderMap finishes building
+    // its markers and controls first; each toggle ends with refreshMapChrome, so the rail
+    // and legend catch up on their own.
+    if (pendingLayers) {
+      const want = new Set(pendingLayers); pendingLayers = null;
+      setTimeout(() => {
+        if (want.has("zoning") && !zoningLayerOn)     toggleZoningLayer();
+        if (want.has("rezone") && !rezoneLayerOn)     toggleRezoneLayer();
+        if (want.has("street") && !streetWorkLayerOn) toggleStreetWorkLayer();
+      }, 0);
+    }
 
   }
 
@@ -4248,20 +4303,96 @@ document.getElementById("scope-large").addEventListener("click", () => setScope(
 
 // ── State persistence: shareable URL params + localStorage for return visits ──
 // URL wins over stored state; only non-defaults go in the URL so links stay clean.
+// Everything that describes what you're looking at, as one object. syncState writes it to
+// the URL (only the non-defaults, so a fresh page stays a bare path) and to localStorage;
+// init reads the URL first, then localStorage. Before this only city/view/scope survived —
+// "Capitol Hill + In Progress + $10M+" produced a bare URL and reset on reload.
+const STATE_KEYS = ["city","view","scope","nb","status","use","type","minval","sort","search",
+                    "watched","street","stalled","dormant","layers","recent"];
+function currentState() {
+  const $ = id => document.getElementById(id);
+  const layers = [];
+  if (zoningLayerOn)     layers.push("zoning");
+  if (rezoneLayerOn)     layers.push("rezone");
+  if (streetWorkLayerOn) layers.push("street");
+  return {
+    city:    currentCity,
+    view:    currentView,
+    scope:   analyticsScope,
+    nb:      $("filter-neighborhood")?.value || "",
+    status:  multiSelects["ms-status"]?.get() || [],
+    use:     multiSelects["ms-use"]?.get() || [],
+    type:    $("filter-type")?.value || "",
+    minval:  $("filter-minval")?.value || "",
+    sort:    $("sort-by")?.value || "",
+    search:  $("search")?.value || "",
+    watched: watchedOnly, street: streetWorkOnly, stalled: stalledOnly, dormant: dormantOnly,
+    layers,
+    recent:  recentMode ? recentCount : 0,
+    theme:   currentTheme,
+  };
+}
 function syncState() {
-  try {
-    localStorage.setItem("chd-state", JSON.stringify({ city: currentCity, view: currentView, scope: analyticsScope, theme: currentTheme }));
-  } catch { /* private browsing */ }
+  const s = currentState();
+  try { localStorage.setItem("chd-state", JSON.stringify(s)); } catch { /* private browsing */ }
   try {
     const p = new URLSearchParams(window.location.search);
-    ["city", "view", "scope"].forEach(k => p.delete(k));
-    if (currentCity !== "seattle") p.set("city", currentCity);
-    if (currentView !== "grid")    p.set("view", currentView);
-    if (analyticsScope)            p.set("scope", "large");
+    // Wipe our own keys and re-add only the ones that differ from the default, so a
+    // default view stays a clean bare URL. `permit` is deliberately left alone: it's a
+    // one-shot deep link owned by the permalink handler, not part of the filter state.
+    STATE_KEYS.forEach(k => p.delete(k));
+    if (s.city !== "seattle") p.set("city", s.city);
+    if (s.view !== "grid")    p.set("view", s.view);
+    if (s.scope)              p.set("scope", "large");
+    if (s.nb)                 p.set("nb", s.nb);
+    if (s.status.length)      p.set("status", s.status.join(","));
+    if (s.use.length)         p.set("use", s.use.join(","));
+    if (s.type)               p.set("type", s.type);
+    if (s.minval && parseFloat(s.minval) !== MIN_VALUE) p.set("minval", s.minval);
+    if (s.sort && s.sort !== "date_desc") p.set("sort", s.sort);
+    if (s.search)             p.set("search", s.search);
+    if (s.watched)            p.set("watched", "1");
+    if (s.street)             p.set("street", "1");
+    if (s.stalled)            p.set("stalled", "1");
+    if (s.dormant)            p.set("dormant", "1");
+    if (s.layers.length)      p.set("layers", s.layers.join(","));
+    if (s.recent)             p.set("recent", String(s.recent));
     const qs = p.toString();
     history.replaceState(null, "", qs ? `?${qs}` : window.location.pathname);
   } catch { /* file:// origins can refuse URL rewrites */ }
 }
+
+// The inverse of syncState for everything below city/view/scope (those three are restored
+// earlier in init because they change what gets fetched). Returns true if anything was
+// applied, so the caller knows to re-run applyFilters.
+function restoreFilterState(urlParams, stored) {
+  const $ = id => document.getElementById(id);
+  const pick = (k) => urlParams.has(k) ? urlParams.get(k) : (stored[k] ?? null);
+  let any = false;
+  const nb = pick("nb");
+  if (nb && [...$("filter-neighborhood").options].some(o => o.value === nb)) { $("filter-neighborhood").value = nb; any = true; }
+  const list = k => { const v = pick(k); return Array.isArray(v) ? v : (typeof v === "string" && v ? v.split(",") : null); };
+  const st = list("status"); if (st) { multiSelects["ms-status"].set(st); any = true; }
+  const us = list("use");    if (us) { multiSelects["ms-use"].set(us);    any = true; }
+  const ty = pick("type");   if (ty && [...$("filter-type").options].some(o => o.value === ty))   { $("filter-type").value = ty;   any = true; }
+  const mv = pick("minval"); if (mv && [...$("filter-minval").options].some(o => o.value === String(mv))) { $("filter-minval").value = String(mv); any = true; }
+  const so = pick("sort");   if (so && [...$("sort-by").options].some(o => o.value === so))       { $("sort-by").value = so;      any = true; }
+  const q  = pick("search"); if (q) { $("search").value = q; any = true; }
+  const flag = k => { const v = pick(k); return v === "1" || v === true; };
+  if (flag("watched")) { watchedOnly = true;    $("btn-watched")?.classList.add("active");    any = true; }
+  if (flag("street"))  { streetWorkOnly = true; $("btn-streetwork")?.classList.add("active"); any = true; }
+  if (flag("stalled")) { stalledOnly = true;    $("btn-stalled")?.classList.add("active");    any = true; }
+  if (flag("dormant")) { dormantOnly = true;    $("btn-dormant")?.classList.add("active");    any = true; }
+  const rc = parseInt(pick("recent"), 10);
+  if (rc > 0) { recentMode = true; recentCount = rc; any = true; }
+  // Map layers are applied by the map itself once it exists — see pendingLayers.
+  const ly = list("layers");
+  if (ly && ly.length) pendingLayers = ly;
+  return any;
+}
+// Layers a deep link asked for, applied the first time the map is built (there's no map to
+// toggle on during init). Consumed once.
+let pendingLayers = null;
 
 function loadStoredState() {
   try { return JSON.parse(localStorage.getItem("chd-state") || "{}") || {}; }
@@ -4339,7 +4470,14 @@ function initMultiSelect(groupId, allLabel) {
 
   updateLabel();
   msCloseFns.push(close);
-  multiSelects[groupId] = { get: selected, close };
+  // set() exists so a deep link can restore a multi-select without dispatching change
+  // events — the caller runs applyFilters once at the end rather than once per checkbox.
+  function set(values) {
+    const want = new Set(values || []);
+    checks.forEach(c => { c.checked = want.has(c.value); });
+    updateLabel();
+  }
+  multiSelects[groupId] = { get: selected, set, close };
 }
 initMultiSelect("ms-status", "All");
 initMultiSelect("ms-use", "All");
@@ -4352,7 +4490,7 @@ function getFilteredList() {
   const minValF = parseFloat(document.getElementById("filter-minval").value) || MIN_VALUE;
   const searchF = document.getElementById("search").value.toLowerCase();
   return allPermits.filter(p => {
-    if (watchedOnly && !watchlist.has(p.permitnum)) return false;
+    if (watchedOnly && !isWatched(p)) return false;
     if (streetWorkOnly && !hasStreetWork(p)) return false;
     if (stalledOnly && !isStalled(p)) return false;
     if (dormantOnly && !isDormant(p)) return false;
@@ -4443,6 +4581,9 @@ async function init() {
     document.getElementById("scope-all").classList.remove("active");
     document.getElementById("scope-large").classList.add("active");
   }
+  // Everything below city/view/scope. Runs after the neighbourhood dropdown has been
+  // populated for the restored city, so a deep-linked nb= can actually be selected.
+  restoreFilterState(urlParams, stored);
   if (view && view !== "grid") setView(view);
   syncCityOnlyButtons();
   try {
@@ -4490,6 +4631,20 @@ async function init() {
           applyFilters({ preserveView: true });
         })
         .catch(e => console.warn("Land use fetch failed", e));
+    }
+    // ?permit=NNN — a one-shot deep link to a single project. Opens its modal, and if the
+    // map is the requested view, lands on its pin as well. The RSS feed and weekly digest
+    // now link here instead of to the city portal, so readers arrive in the app that has
+    // the map, the history and the watch button rather than being sent away from it.
+    const wantPermit = urlParams.get("permit");
+    if (wantPermit && allPermits.some(p => p.permitnum === wantPermit)) {
+      openModal(wantPermit);
+      if (currentView === "map") {
+        const p = allPermits.find(x => x.permitnum === wantPermit);
+        whenLibsReady(() => setTimeout(() => {
+          if (map && p.latitude && p.longitude) { map.setView([+p.latitude, +p.longitude], 17); highlightSiteMarker(p); }
+        }, 400));
+      }
     }
     try { localStorage.setItem("chd-last-visit", new Date().toISOString()); } catch {}
     const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
@@ -4645,6 +4800,38 @@ document.getElementById("btn-watched").addEventListener("click", toggleWatchedFi
 document.getElementById("btn-streetwork").addEventListener("click", toggleStreetWorkFilter);
 document.getElementById("btn-stalled").addEventListener("click", toggleStalledFilter);
 document.getElementById("btn-dormant").addEventListener("click", toggleDormantFilter);
+
+// Copy link: the URL already describes the full view (syncState keeps it current), so this
+// is just the clipboard write plus a moment of feedback on the button itself.
+document.getElementById("btn-copylink").addEventListener("click", async function () {
+  syncState();
+  const btn = this, original = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(location.href);
+    btn.textContent = "✓ Copied";
+  } catch {
+    // Clipboard blocked (insecure context, denied permission): fall back to selecting the
+    // URL in a prompt so it can still be copied by hand.
+    window.prompt("Copy this link:", location.href);
+    btn.textContent = original; return;
+  }
+  setTimeout(() => { btn.textContent = original; }, 1400);
+});
+
+// Stars inside map popups. Popups live under #map, not the grid or the modal, so neither of
+// those delegated handlers sees them. stopPropagation keeps the click from reaching the
+// map, which would otherwise close the popup mid-toggle.
+document.getElementById("map").addEventListener("click", e => {
+  const star = e.target.closest(".star-btn");
+  if (!star) return;
+  e.stopPropagation();
+  toggleWatch(star.dataset.pn);
+  const p = allPermits.find(x => x.permitnum === star.dataset.pn);
+  const on = p ? isWatched(p) : false;
+  star.classList.toggle("starred", on);
+  star.textContent = on ? "★" : "☆";
+  star.title = on ? "Stop watching this site" : "Watch this site";
+});
 document.getElementById("btn-grid").addEventListener("click", () => setView("grid"));
 document.getElementById("btn-map").addEventListener("click", () => setView("map"));
 document.getElementById("btn-analytics").addEventListener("click", () => setView("analytics"));
