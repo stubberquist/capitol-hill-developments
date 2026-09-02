@@ -593,19 +593,6 @@
       cursor: help;
     }
     .lu-status.lu-stuck { color: #fb923c; }
-    /* The cluster-contents list. Rows are real buttons so they're keyboard-reachable. */
-    .cluster-popup .leaflet-popup-content { margin: 10px 12px; }
-    .cluster-list { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-width: 260px; }
-    .cl-head { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
-    .cl-row {
-      display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
-      background: none; border: none; padding: 6px 4px; border-radius: 6px;
-      cursor: pointer; font: inherit; color: var(--text);
-    }
-    .cl-row:hover, .cl-row:focus-visible { background: var(--surface2); outline: none; }
-    .cl-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; border: 1.5px solid rgba(255,255,255,.3); }
-    .cl-addr { flex: 1; font-size: 13px; font-weight: 600; }
-    .cl-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
     .site-pill {
       font-size: 11px; font-weight: 600;
       padding: 2px 8px; border-radius: 20px;
@@ -3720,44 +3707,21 @@ function renderMapLegend() {
   }
 }
 
-// A cluster of up to this many sites opens as a list instead of zooming in. The descent
-// through nested clusters was the whole "ten clicks to reach a permit" complaint: from the
-// default z12 view a pin sits in a cluster of median 175 sites, 49 one zoom in, 5 two zooms
-// in. One zoom from home therefore lands most people inside a cluster small enough to just
-// read, and the list stops the descent there — home → one zoom → list → pick is three
-// clicks. Bigger clusters still zoom to their bounds. 50 catches the z13 median.
-const CLUSTER_LIST_MAX = 50;
+// A pie click is always the last pie you see. The descent through nested clusters was the
+// whole "ten clicks to reach a permit" complaint: from the default z12 view a pin sits in a
+// cluster of median 175 sites, then 49, then 5, and markercluster's own zoomToBounds walked
+// that one level at a time. Any cluster click now lands at or past the level where
+// clustering switches off, centred on what was clicked, so what's left is dots. A tight
+// cluster whose bounds fit at z16 still gets the tighter fit; a spread-out one whose bounds
+// would only fit at z13 is forced to z14 instead — a few of its children may land
+// off-screen, which is the deliberate trade against clicking through another layer of
+// pies.
 function onClusterClick(e) {
   const cluster = e.layer;
-  const kids = cluster.getAllChildMarkers();
-  if (kids.length > CLUSTER_LIST_MAX) { cluster.zoomToBounds({ padding: [20, 20] }); return; }
-
-  const rows = kids.map(m => m._site).filter(Boolean).map(s => ({
-    s, rep: s.permits[0],
-    units: s.permits.reduce((mx, p) => Math.max(mx, parseFloat(extractUnits(p)) || 0), 0),
-  })).sort((a, b) => b.units - a.units || b.s.permits.length - a.s.permits.length);
-
-  const html = `<div class="cluster-list"><div class="cl-head">${rows.length} site${rows.length === 1 ? "" : "s"} in this cluster</div>` +
-    rows.map((r, i) => {
-      const st = getStatus(r.rep);
-      const meta = [r.units ? `${r.units} homes` : "", r.s.permits.length > 1 ? `${r.s.permits.length} permits` : ""].filter(Boolean).join(" · ");
-      return `<button type="button" class="cl-row" data-i="${i}" title="${esc(statusLabel(st))}">
-        <span class="cl-dot" style="background:${MAP_COLORS[st]}"></span>
-        <span class="cl-addr">${esc(r.rep.originaladdress1 || "Address unknown")}</span>
-        <span class="cl-meta">${esc(meta)}</span>
-      </button>`;
-    }).join("") + `</div>`;
-
-  const popup = L.popup({ maxWidth: 360, maxHeight: 380, className: "cluster-popup" })
-    .setLatLng(cluster.getLatLng()).setContent(html).openOn(map);
-  // A row opens that site's own popup on its representative permit, via the same path
-  // "Show on Map" uses — it zooms only as far as needed to make the pin visible.
-  popup.getElement()?.querySelectorAll(".cl-row").forEach(b => b.addEventListener("click", ev => {
-    ev.stopPropagation();
-    const r = rows[+b.dataset.i];
-    map.closePopup(popup);
-    highlightSiteMarker(r.rep);
-  }));
+  const bounds = cluster.getBounds();
+  const floor = clusterGroup.options.disableClusteringAtZoom;
+  const fit = bounds.isValid() ? map.getBoundsZoom(bounds, false, L.point(20, 20)) : floor;
+  map.setView(bounds.isValid() ? bounds.getCenter() : cluster.getLatLng(), Math.max(fit, floor));
 }
 
 // Find the site pin for a permit, reveal it, and open its popup on that permit. Without
@@ -3864,9 +3828,9 @@ function renderMap(permits) {
       // used to guard against — dozens of permits stacked on one coordinate — no longer
       // exists; at z14 the median cluster held 5 sites.
       disableClusteringAtZoom: NARROW_MAP() ? 15 : 14,
-      // Cluster clicks are handled by onClusterClick below, which zooms for big clusters and
-      // lists small ones. Spiderfy is off because it existed for per-permit pins stacking on
-      // one coordinate; site pins never share one.
+      // Cluster clicks are handled by onClusterClick below, which always zooms past this
+      // threshold in one step. Spiderfy is off because it existed for per-permit pins
+      // stacking on one coordinate; site pins never share one.
       zoomToBoundsOnClick: false,
       spiderfyOnMaxZoom: false,
       showCoverageOnHover: false,
@@ -3969,7 +3933,6 @@ function renderMap(permits) {
         : (rep.originaladdress1 || "Address unknown"),
     });
     circle._permitMeta = { units: unitsN, status };
-    circle._site = site;   // so a cluster click can list what's inside without re-deriving it
     if (clusterGroup) clusterGroup.addLayer(circle); else circle.addTo(map);
     // Leaflet passes the layer to a function popup, which lets "Show on Map" stash which
     // permit it wants opened. Consumed once so a later ordinary click still opens on the
