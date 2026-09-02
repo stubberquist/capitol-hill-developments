@@ -583,6 +583,14 @@
       margin: -6px 0 12px;
       cursor: help;
     }
+    .lu-status {
+      flex-basis: 100%;   /* its own row inside the card's tag strip */
+      font-size: 11px;
+      color: var(--muted);
+      cursor: help;
+    }
+    .lu-status.lu-stuck { color: #fb923c; }
+    .modal .lu-status, .modal-body .lu-status { margin: -4px 0 10px; }
 
     /* Dashed, unlike the solid MHA badge next to it: this describes proposed legislation,
        not a fact about the permit, and the outline is the cue that it isn't settled. */
@@ -1801,6 +1809,59 @@ function seattleTodayMs() {
 // ── Street activity (SDOT Street Use permits) ──────────────────────────────────
 // Address -> { text, endMs } for the currently-active right-of-way permit with the
 // biggest pedestrian/traffic impact at that address (sidewalk closure, staging, etc.)
+// ── Land Use (Master Use Permit) status ──────────────────────────────────────
+// The building-permit dataset only LINKS to the land-use record via relatedmup. Fetching the
+// record itself from Seattle's Land Use Permits dataset answers the question the app never
+// could: WHY is this stuck? Of 633 building permits in review, the land-use record reads
+// "Additional Info Requested" on 323 and "Corrections Required" on 85 — two thirds are stuck
+// because the city sent the land-use application back. 98.7% of relatedmup values resolve.
+// Same Socrata host and token as the permits, so no CSP change.
+//
+// Fetched in the background after permits land and never awaited, same shape as street
+// activity: a handful of chunked IN() queries, then a preserveView repaint. Not baked as a
+// constant like SIP_INDEX because 2,424 entries would cost ~25-30 KB gzipped against ~14 KB
+// of size-budget headroom.
+const LU_API = "https://data.seattle.gov/resource/ht3q-kdvx.json";
+let LU_INDEX = {};   // relatedmup → { status, applied, decided, description }
+
+async function fetchLandUse(mups) {
+  const out = {};
+  const CHUNK = 400;   // ~12 chars per id keeps each URL well under 8 KB
+  for (let i = 0; i < mups.length; i += CHUNK) {
+    const list = mups.slice(i, i + CHUNK).map(m => `'${String(m).replace(/'/g, "''")}'`).join(",");
+    const params = new URLSearchParams({
+      "$select": "permitnum,statuscurrent,applieddate,decisiondate,description",
+      "$where":  `permitnum in (${list})`,
+      "$limit":  String(CHUNK + 50),
+    });
+    if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
+    const res = await fetch(`${LU_API}?${params}`);
+    if (!res.ok) throw new Error(`Land Use HTTP ${res.status}`);
+    for (const r of await res.json()) {
+      out[r.permitnum] = { status: r.statuscurrent || "", applied: r.applieddate || "",
+                           decided: r.decisiondate || "", description: r.description || "" };
+    }
+  }
+  return out;
+}
+
+function luFor(p) { return p.relatedmup ? (LU_INDEX[p.relatedmup] || null) : null; }
+
+// One compact line: land-use status, when it was applied for, when SDCI decided. The
+// land-use application predates the building permit by a median of 163 days (91% of
+// cases), so "applied" here is closer to the project's real start than anything on the
+// building permit. The two "city sent it back" states get the stuck colour.
+function luStatusHTML(p) {
+  const lu = luFor(p);
+  if (!lu || !lu.status) return "";
+  const bits = [esc(lu.status)];
+  if (lu.applied) bits.push(`applied ${esc(fmtDate(lu.applied))}`);
+  if (lu.decided) bits.push(`decided ${esc(fmtDate(lu.decided))}`);
+  const stuck = /additional info|correction/i.test(lu.status);
+  const tip = lu.description ? esc(lu.description.slice(0, 300)) : "Land-use (Master Use Permit) record from SDCI";
+  return `<div class="lu-status${stuck ? " lu-stuck" : ""}" title="${tip}">Land use · ${bits.join(" · ")}</div>`;
+}
+
 let STREET_ACTIVITY = {};
 // Address -> { text, startMs } for the soonest-starting permit whose window hasn't
 // opened yet (scheduled within STREET_UPCOMING_WINDOW_DAYS). Only set when there's
@@ -2664,6 +2725,7 @@ function renderGrid(permits) {
         ${rezone ? `<div class="rezone-badge" title="Proposed in the Centers and Corridors legislation transmitted to Council on 28 Jan 2026${rezone.where ? ` · ${esc(rezone.where)}` : ""}. Not yet adopted — may change before any vote.">Rezone proposed · ${rezone.from ? `${esc(rezone.from)} → ` : "→ "}${esc(rezone.to)}</div>` : ""}
         ${lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : ""}
         ${stuckBadgesHTML(p, false)}
+        ${luStatusHTML(p)}
       </div>
 
       <div class="card-footer">
@@ -2772,6 +2834,7 @@ function openModal(pn) {
     </div>
     ${timelineHTML(p)}
     ${reviewStatsHTML(p)}
+    ${luStatusHTML(p)}
     <div class="modal-desc">${esc(p.description || "No description provided.")}</div>
     <div class="card-meta">
       <div class="meta-item"><span class="meta-key">Est. Value</span><span class="meta-val" style="color:var(--accent);font-weight:700">${fmtValue(p.estprojectcost)}</span></div>
@@ -2979,6 +3042,7 @@ function permitPopupBody(p) {
         ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
         ${lapsedMs ? `<span class="lapsed-badge" style="margin-top:0">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</span>` : ""}
         ${stuckBadgesHTML(p, true)}
+        ${luStatusHTML(p)}
       </div>
       <div class="card-desc" style="margin-bottom:10px">${desc}</div>
       <div class="card-meta" style="margin-bottom:10px">
@@ -4414,6 +4478,19 @@ async function init() {
     ]);
     computeWatchChanges();
     applyFilters();
+    // Land-use status rides in after the grid is up. Needs allPermits for the id list, so it
+    // can't start alongside the permit fetch the way street activity does; it starts here.
+    if (currentCity !== "bellevue") {
+      const luGen = dataGeneration;
+      const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
+      fetchLandUse(mups)
+        .then(idx => {
+          if (luGen !== dataGeneration) return;
+          LU_INDEX = idx;
+          applyFilters({ preserveView: true });
+        })
+        .catch(e => console.warn("Land use fetch failed", e));
+    }
     try { localStorage.setItem("chd-last-visit", new Date().toISOString()); } catch {}
     const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
     document.getElementById("last-updated").textContent =
@@ -4530,6 +4607,19 @@ document.getElementById("filter-city").addEventListener("change", async function
     allPermits = loaded;
     computeWatchChanges();
     applyFilters();
+    // Land-use status rides in after the grid is up. Needs allPermits for the id list, so it
+    // can't start alongside the permit fetch the way street activity does; it starts here.
+    if (currentCity !== "bellevue") {
+      const luGen = dataGeneration;
+      const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
+      fetchLandUse(mups)
+        .then(idx => {
+          if (luGen !== dataGeneration) return;
+          LU_INDEX = idx;
+          applyFilters({ preserveView: true });
+        })
+        .catch(e => console.warn("Land use fetch failed", e));
+    }
     document.getElementById("last-updated").textContent =
       `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
   } catch (err) {
