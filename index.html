@@ -510,6 +510,9 @@
     .use-tag.mixed-use   { background: rgba(240,147,251,0.15); color: #e879f9; }
     .use-tag.commercial  { background: rgba(251,146,60,0.15);  color: #fb923c; }
     .use-tag.other       { background: rgba(100,116,139,0.12); color: var(--muted); }
+    .use-tag.institutional { background: rgba(45,212,191,0.15);  color: #2dd4bf; }
+    .use-tag.industrial    { background: rgba(148,163,184,0.15); color: #94a3b8; }
+    .use-tag.single-family { background: rgba(251,191,36,0.15);  color: var(--yellow); }
 
     .site-activity {
       background: var(--surface2);
@@ -740,6 +743,8 @@
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       grid-column: 1 / -1;
     }
+    .visit-banner.is-link { cursor: pointer; }
+    .visit-banner.is-link:hover, .visit-banner.is-link:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
     .visit-banner b { color: var(--green); }
 
     /* ── Project detail modal ── */
@@ -993,6 +998,21 @@
          already full-bleed, so it keeps wrapping rows and scrolls if that's still too tall. */
       #map-legend .leg-body.multicol { flex-flow: row wrap; align-content: normal; gap: 3px 10px; }
 
+      #mini-bar:not([hidden]) {
+        position: sticky; top: 0; z-index: 900;
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 6px 10px;
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(6px);
+        border-bottom: 1px solid var(--border);
+      }
+      #mini-bar button {
+        background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+      }
+      #mini-bar .mini-views { display: flex; gap: 6px; }
+      #mini-bar .mini-views button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
       /* Comfortable tap targets on touch, and room for bubbles on a narrow map */
       .mc-icon { width: 38px; height: 38px; font-size: 15px; }
       .mc-bubble { padding: 7px 12px; font-size: 12px; }
@@ -1160,6 +1180,9 @@
       <label class="ms-option"><input type="checkbox" value="office"> Office</label>
       <label class="ms-option"><input type="checkbox" value="mixed-use"> Mixed-Use</label>
       <label class="ms-option"><input type="checkbox" value="commercial"> Commercial</label>
+      <label class="ms-option"><input type="checkbox" value="institutional"> Institutional</label>
+      <label class="ms-option"><input type="checkbox" value="industrial"> Industrial</label>
+      <label class="ms-option"><input type="checkbox" value="single-family"> Single-Family</label>
     </div>
   </div>
 
@@ -1204,12 +1227,25 @@
     <button id="btn-streetwork" title="Show only projects with active or upcoming street closures">⚠ Street Work</button>
     <button id="btn-stalled" title="Issued permits that have lapsed or sat 5+ years unfinished, or reviews with no activity in 2+ years">◷ Stalled</button>
     <button id="btn-dormant" title="Sent back for corrections and left in the applicant's court for over a year">⏸ Dormant</button>
+    <button id="btn-changed" title="Filed, issued, or changed status since your last visit">◆ Changed</button>
     <button id="btn-grid" class="active">⊞ Cards</button>
     <button id="btn-map">⊕ Map</button>
     <button id="btn-analytics">∿ Analytics</button>
     <button id="btn-copylink" title="Copy a link to exactly this view — filters, neighborhood, map layers and all">⧉ Link</button>
     <button id="btn-theme" title="Switch light/dark theme">◐</button>
   </div>
+</div>
+
+<!-- Mobile only. The header and controls are ~566px tall on a phone and nothing was sticky,
+     so once you'd scrolled into the cards there was no way back to the filters or the
+     Cards/Map toggle without scrolling to the top. Shown when .controls leaves the viewport. -->
+<div id="mini-bar" hidden>
+  <button id="mini-filters" title="Back to filters">▲ Filters</button>
+  <span class="mini-views">
+    <button data-view="grid" title="Cards">⊞</button>
+    <button data-view="map" title="Map">⊕</button>
+    <button data-view="analytics" title="Analytics">∿</button>
+  </span>
 </div>
 
 <main>
@@ -1227,7 +1263,7 @@
       <div class="an-chart-card"><h3>Housing Units Added per Year</h3><p class="an-desc">Homes created by permits filed each year. For Seattle, the green line nets out units lost to demolition.</p><div class="chart-wrap"><canvas id="chart-units"></canvas></div></div>
       <div class="an-chart-card"><h3>Permits Filed per Year</h3><p class="an-desc">Permit applications submitted per year — the broadest measure of construction activity in the city.</p><div class="chart-wrap"><canvas id="chart-permits"></canvas></div></div>
       <div class="an-chart-card"><h3>Total Project Value per Year</h3><p class="an-desc">Combined estimated construction cost of all projects filed each year, as declared by applicants.</p><div class="chart-wrap"><canvas id="chart-value"></canvas></div></div>
-      <div class="an-chart-card" id="card-review"><h3>Avg Plan Review Days per Year</h3><p class="an-desc">Average days a permit spends in city plan review, by filing year — a gauge of how quickly the city is processing applications.</p><div class="chart-wrap"><canvas id="chart-review"></canvas></div></div>
+      <div class="an-chart-card" id="card-review"><h3>Plan Review Days: City vs Applicant</h3><p class="an-desc">Average days a permit spent in SDCI's queue versus waiting on the applicant to answer corrections, by filing year, with the average number of review rounds. Values exist only once review completes, so the current year always looks fast.</p><div class="chart-wrap"><canvas id="chart-review"></canvas></div></div>
       <div class="an-chart-card" id="card-cpu"><h3>Construction Cost per Unit</h3><p class="an-desc">Declared cost per home created, among permits that add housing — a rough gauge of how expensive building housing has become.</p><div class="chart-wrap"><canvas id="chart-cpu"></canvas></div></div>
       <div class="an-chart-card" id="card-outcomes"><h3>Permit Outcomes by Filing Year</h3><p class="an-desc">Where each year's applications ended up: issued, abandoned (cancelled, withdrawn, expired, or denied before issuance), or still in process. Recent years are naturally more pending.</p><div class="chart-wrap"><canvas id="chart-outcomes"></canvas></div></div>
       <div class="an-chart-card" id="card-adu"><h3>ADU &amp; Backyard Cottage Permits per Year</h3><p class="an-desc">Permits for accessory dwelling units — basement apartments and backyard cottages — identified from project descriptions. All project sizes, regardless of the $1M+ toggle.</p><div class="chart-wrap"><canvas id="chart-adu"></canvas></div></div>
@@ -1451,6 +1487,8 @@ let watchedOnly = false;
 let streetWorkOnly = false;
 let stalledOnly    = false;
 let dormantOnly    = false;
+let changedOnly    = false;
+let groupBySite    = false;   // Phase G: one card per address instead of one per permit
 const watchlist = new Set(loadJSON("chd-watchlist", []));
 const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); } catch { return null; } })();
 const watchStatusPrev = loadJSON("chd-watch-status", {});
@@ -1512,6 +1550,12 @@ function toggleDormantFilter() {
   applyFilters();
 }
 
+function toggleChangedFilter() {
+  changedOnly = !changedOnly;
+  document.getElementById("btn-changed").classList.toggle("active", changedOnly);
+  applyFilters();
+}
+
 // Both toggles depend on Seattle-only data — SDOT for street work, SDCI's expiry date for
 // stalled — so they're meaningless (and would return zero results) for Bellevue. Hidden
 // there, and the filter is cleared first so it can't strand the view on an empty list.
@@ -1536,9 +1580,15 @@ function isNewSinceVisit(p) {
          (p.issueddate  && p.issueddate  > lastVisit);
 }
 
+// Snapshots EVERY loaded permit's status, not just watched ones. The return-visit banner
+// used to say "28 permits filed or issued since your last visit — look for the NEW chip"
+// with no way to see them, and status changes were only tracked for starred permits. All
+// ~11k statuses serialise to ~186 KB, well inside localStorage's budget, and buy the core
+// neighbour question: "what happened here since last week?" Same storage key as before,
+// so an existing snapshot migrates as a subset.
 function snapshotWatchStatuses() {
   const snap = { ...watchStatusPrev };
-  allPermits.forEach(p => { if (p.permitnum && isWatched(p)) snap[p.permitnum] = getStatus(p); });
+  allPermits.forEach(p => { if (p.permitnum) snap[p.permitnum] = getStatus(p); });
   saveJSON("chd-watch-status", snap);
 }
 
@@ -1548,10 +1598,13 @@ function computeWatchChanges() {
   watchChanges = {};
   allPermits.forEach(p => {
     const prev = watchStatusPrev[p.permitnum];
-    if (isWatched(p) && prev && prev !== getStatus(p)) watchChanges[p.permitnum] = prev;
+    if (prev && prev !== getStatus(p)) watchChanges[p.permitnum] = prev;
   });
   snapshotWatchStatuses();
 }
+// The "◆ New / Changed" quick filter: filed or issued since the last visit, or moved to a
+// different status bucket since then.
+function isChangedSinceVisit(p) { return isNewSinceVisit(p) || !!watchChanges[p.permitnum]; }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 let currentTheme = loadStoredState().theme ||
@@ -1762,12 +1815,23 @@ function getBuildingUse(p) {
   if (/\boffice\b|coworking|co.working|workspace/.test(desc)) return "office";
   if (/commercial|retail|hotel|hospit/.test(desc)) return "commercial";
 
+  // The description regexes above put 37% of permits in "Other". permitclass — SDCI's own
+  // occupancy class, populated on 100% of rows with six clean values — resolves most of
+  // that: 803 Institutional (UW Medicine, sports facilities), 286 Industrial, 1,127
+  // Single-Family/Duplex. It's consulted only on fallthrough, never as an override: it is
+  // the building's occupancy class, not the project's intent, and 391 "Large Multifamily"
+  // rows are class Commercial (mixed-use towers) that the regexes get right.
+  const pc = (p.permitclass || "").toLowerCase();
+  if (pc.includes("institutional")) return "institutional";
+  if (pc.includes("industrial"))    return "industrial";
+  if (pc.includes("single family") || pc.includes("duplex")) return "single-family";
   return "other";
 }
 
 function useLabel(key) {
   return { multifamily:"Multifamily", office:"Office", "mixed-use":"Mixed-Use",
-           commercial:"Commercial", other:"Other" }[key] ?? key;
+           commercial:"Commercial", institutional:"Institutional", industrial:"Industrial",
+           "single-family":"Single-Family", other:"Other" }[key] ?? key;
 }
 
 // Extract unit count — prefer the dedicated API field, fall back to description parsing
@@ -2637,10 +2701,21 @@ function renderGrid(permits) {
     return;
   }
 
-  const newCount = lastVisit ? permits.filter(isNewSinceVisit).length : 0;
-  const banner = newCount
-    ? `<div class="visit-banner"><b>${newCount.toLocaleString()}</b> permit${newCount === 1 ? "" : "s"} filed or issued since your last visit (${fmtDate(lastVisit)}) — look for the NEW chip.</div>`
-    : "";
+  // The banner is now a button into the Changed filter rather than a dead statement. It
+  // counts against the current filter set, so with a neighbourhood selected it reads
+  // "3 in Ballard since Aug 18", which is the question that was actually being asked.
+  const newCount     = lastVisit ? permits.filter(isNewSinceVisit).length : 0;
+  const changedCount = lastVisit ? permits.filter(p => !isNewSinceVisit(p) && watchChanges[p.permitnum]).length : 0;
+  const since = newCount + changedCount;
+  let banner = "";
+  if (changedOnly) {
+    banner = `<div class="visit-banner is-link" role="button" tabindex="0" title="Back to everything">Showing the <b>${permits.length.toLocaleString()}</b> permit${permits.length === 1 ? "" : "s"} that changed since your last visit (${fmtDate(lastVisit)}) · <u>show all</u></div>`;
+  } else if (since) {
+    const bits = [];
+    if (newCount)     bits.push(`<b>${newCount.toLocaleString()}</b> filed or issued`);
+    if (changedCount) bits.push(`<b>${changedCount.toLocaleString()}</b> changed status`);
+    banner = `<div class="visit-banner is-link" role="button" tabindex="0" title="Show only these">${bits.join(", ")} since your last visit (${fmtDate(lastVisit)}) · <u>show them</u></div>`;
+  }
 
   const shown = permits.slice(0, gridLimit);
   grid.innerHTML = banner + shown.map(p => {
@@ -2917,6 +2992,7 @@ function closeModal() {
 document.getElementById("grid-view").addEventListener("click", e => {
   const star = e.target.closest(".star-btn");
   if (star) { toggleWatch(star.dataset.pn); return; }
+  if (e.target.closest(".visit-banner.is-link")) { toggleChangedFilter(); return; }
   if (e.target.closest("a") || e.target.closest("button")) return;
   const card = e.target.closest(".card[data-pn]");
   if (card) openModal(card.dataset.pn);
@@ -3352,6 +3428,26 @@ function drawRezoneLayer() {
   rezoneLayer.eachLayer(l => l.bringToBack?.());
 }
 
+// "Near me": pan to the phone's location at z17 and drop a dot. Geolocation is available
+// under the existing CSP (it's a browser API, not a network request). Stands recentMode
+// down first, the same way highlightSiteMarker does — otherwise you can land on a block
+// whose pins have been filtered away and see nothing.
+let youMarker = null;
+function geolocateToMe() {
+  if (youMarker) { youMarker.remove(); youMarker = null; refreshMapChrome(); return; }
+  if (!navigator.geolocation || !map) return;
+  navigator.geolocation.getCurrentPosition(pos => {
+    const lat = pos.coords.latitude, lon = pos.coords.longitude;
+    if (recentMode) { recentMode = false; renderMap(getFilteredList()); }
+    map.setView([lat, lon], 17);
+    youMarker = L.circleMarker([lat, lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#6c8ef5", fillOpacity: 1 })
+      .bindTooltip("You are here").addTo(map);
+    refreshMapChrome();
+  }, err => {
+    alert("Couldn't get your location" + (err && err.message ? `: ${err.message}` : "."));
+  }, { enableHighAccuracy: true, timeout: 10000 });
+}
+
 function toggleRezoneLayer() {
   rezoneLayerOn = !rezoneLayerOn;
   if (rezoneLayer) { rezoneLayer.remove(); rezoneLayer = null; }
@@ -3418,6 +3514,15 @@ const MAP_CONTROLS = [
     hidden:   () => currentCity === "bellevue" || !pendingRezones?.length,
     isActive: () => rezoneLayerOn,
     onToggle: toggleRezoneLayer,
+  },
+  {
+    id: "nearme",
+    icon: "◎",
+    title: "Near me — what's that construction site I'm standing next to?",
+    type: "toggle",
+    hidden:   () => !navigator.geolocation,
+    isActive: () => !!youMarker,
+    onToggle: geolocateToMe,
   },
 ];
 
@@ -3854,7 +3959,10 @@ async function fetchSeattleAnalytics(largeOnly) {
                 "$where": `applieddate >= '${startYear}-01-01'${scope}` }),
     soqlFetch({ "$select": ytdSelect, "$where": `applieddate between '${y}-01-01' and '${today}'${scope}` }),
     soqlFetch({ "$select": ytdSelect, "$where": `applieddate between '${y-1}-01-01' and '${priorToday}'${scope}` }),
-    soqlFetch({ "$select": "date_extract_y(applieddate) AS year, avg(totaldaysplanreview) AS days",
+    // Split city time from applicant time. In every year but 2022, applicants held the
+    // permit longer than SDCI did — a distinction one averaged bar can't show.
+    soqlFetch({ "$select": "date_extract_y(applieddate) AS year, avg(totaldaysplanreview) AS days, " +
+                           "avg(daysplanreviewcity) AS city, avg(daysoutcorrections) AS applicant, avg(numberreviewcycles) AS rounds",
                 "$group": "year", "$order": "year",
                 "$where": `applieddate >= '${startYear}-01-01' AND totaldaysplanreview IS NOT NULL${scope}` })
       .catch(() => null),
@@ -3953,7 +4061,12 @@ async function fetchSeattleAnalytics(largeOnly) {
     ytd:      { permits: +ytd[0].permits,      units: netUnits(+(ytd[0].units || 0), overByYear[y]), value: +(ytd[0].value || 0) },
     ytdPrior: { permits: +ytdPrior[0].permits, units: netUnits(+(ytdPrior[0].units || 0), priorYtdOver), value: +(ytdPrior[0].value || 0) },
     review: review
-      ? review.map(r => ({ year: +r.year, days: Math.round(+r.days) })).filter(r => r.year >= startYear && r.year <= y)
+      ? review.map(r => ({ year: +r.year, days: Math.round(+r.days),
+                           city: Math.round(+r.city || 0), applicant: Math.round(+r.applicant || 0),
+                           rounds: +(+r.rounds || 0).toFixed(1) }))
+          // The field is effectively empty before 2017 (n=155), which would draw a
+          // misleading near-zero bar. Start the axis where the data does.
+          .filter(r => r.year >= Math.max(startYear, 2018) && r.year <= y)
       : null,
     monthly: monthly.map(r => {
       const d = new Date(r.month);
@@ -4191,7 +4304,15 @@ function renderAnalytics(d) {
 
   const hasReview = d.review && d.review.length;
   document.getElementById("card-review").style.display = hasReview ? "" : "none";
-  if (hasReview) makeChart("chart-review", "line", d.review.map(r => r.year), d.review.map(r => r.days), { color: "#a78bfa" });
+  if (hasReview) makeChart("chart-review", "bar", d.review.map(r => r.year), null, {
+    stacked: true, legend: true,
+    datasets: [
+      { label: "City (SDCI queue)",        data: d.review.map(r => r.city),      color: "#a78bfa" },
+      { label: "Applicant (corrections)",  data: d.review.map(r => r.applicant), color: "#fb923c" },
+      { label: "Review rounds",            data: d.review.map(r => r.rounds),    color: "#34d399", type: "line", yAxisID: "y1" },
+    ],
+    y1: { fmt: v => `${v} rounds` },
+  });
 
   const cpu = (d.cpuYearly || []).filter(r => r.units > 0 && r.value > 0);
   document.getElementById("card-cpu").style.display = cpu.length ? "" : "none";
@@ -4308,7 +4429,7 @@ document.getElementById("scope-large").addEventListener("click", () => setScope(
 // init reads the URL first, then localStorage. Before this only city/view/scope survived —
 // "Capitol Hill + In Progress + $10M+" produced a bare URL and reset on reload.
 const STATE_KEYS = ["city","view","scope","nb","status","use","type","minval","sort","search",
-                    "watched","street","stalled","dormant","layers","recent"];
+                    "watched","street","stalled","dormant","changed","layers","recent","group"];
 function currentState() {
   const $ = id => document.getElementById(id);
   const layers = [];
@@ -4327,6 +4448,7 @@ function currentState() {
     sort:    $("sort-by")?.value || "",
     search:  $("search")?.value || "",
     watched: watchedOnly, street: streetWorkOnly, stalled: stalledOnly, dormant: dormantOnly,
+    changed: changedOnly, group: groupBySite,
     layers,
     recent:  recentMode ? recentCount : 0,
     theme:   currentTheme,
@@ -4355,6 +4477,8 @@ function syncState() {
     if (s.street)             p.set("street", "1");
     if (s.stalled)            p.set("stalled", "1");
     if (s.dormant)            p.set("dormant", "1");
+    if (s.changed)            p.set("changed", "1");
+    if (s.group)              p.set("group", "site");
     if (s.layers.length)      p.set("layers", s.layers.join(","));
     if (s.recent)             p.set("recent", String(s.recent));
     const qs = p.toString();
@@ -4383,6 +4507,8 @@ function restoreFilterState(urlParams, stored) {
   if (flag("street"))  { streetWorkOnly = true; $("btn-streetwork")?.classList.add("active"); any = true; }
   if (flag("stalled")) { stalledOnly = true;    $("btn-stalled")?.classList.add("active");    any = true; }
   if (flag("dormant")) { dormantOnly = true;    $("btn-dormant")?.classList.add("active");    any = true; }
+  if (flag("changed")) { changedOnly = true;    $("btn-changed")?.classList.add("active");    any = true; }
+  if (pick("group") === "site" || pick("group") === true) { groupBySite = true; $("btn-group")?.classList.add("active"); any = true; }
   const rc = parseInt(pick("recent"), 10);
   if (rc > 0) { recentMode = true; recentCount = rc; any = true; }
   // Map layers are applied by the map itself once it exists — see pendingLayers.
@@ -4494,6 +4620,7 @@ function getFilteredList() {
     if (streetWorkOnly && !hasStreetWork(p)) return false;
     if (stalledOnly && !isStalled(p)) return false;
     if (dormantOnly && !isDormant(p)) return false;
+    if (changedOnly && !isChangedSinceVisit(p)) return false;
     if (!neighborhoodMatch(p, nbF)) return false;
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
@@ -4714,7 +4841,7 @@ document.getElementById("filter-city").addEventListener("change", async function
       : "Seattle, WA · Multifamily & Office · $1M+ projects · Live SDCI data";
 
   // Reset map so it re-initializes at the right city center next render
-  if (map) { map.remove(); map = null; markers = []; clusterGroup = null; tileLayer = null; }
+  if (map) { map.remove(); map = null; markers = []; clusterGroup = null; tileLayer = null; youMarker = null; }
   // The overlays belonged to the destroyed map instance; drop them (cached data is kept)
   streetWorkLayer = null;
   streetWorkLayerOn = false;
@@ -4800,6 +4927,7 @@ document.getElementById("btn-watched").addEventListener("click", toggleWatchedFi
 document.getElementById("btn-streetwork").addEventListener("click", toggleStreetWorkFilter);
 document.getElementById("btn-stalled").addEventListener("click", toggleStalledFilter);
 document.getElementById("btn-dormant").addEventListener("click", toggleDormantFilter);
+document.getElementById("btn-changed").addEventListener("click", toggleChangedFilter);
 
 // Copy link: the URL already describes the full view (syncState keeps it current), so this
 // is just the clipboard write plus a moment of feedback on the button itself.
@@ -4817,6 +4945,22 @@ document.getElementById("btn-copylink").addEventListener("click", async function
   }
   setTimeout(() => { btn.textContent = original; }, 1400);
 });
+
+// The mobile mini-bar shows itself when the controls block scrolls out of view. Desktop
+// never shows it: the CSS only styles it inside the 640px media block, and the observer
+// checks width too so it doesn't flicker `hidden` on a wide window.
+(() => {
+  const bar = document.getElementById("mini-bar");
+  const controls = document.querySelector(".controls");
+  if (!bar || !controls || !("IntersectionObserver" in window)) return;
+  const sync = () => bar.querySelectorAll(".mini-views button").forEach(b => b.classList.toggle("active", b.dataset.view === currentView));
+  new IntersectionObserver(([entry]) => {
+    bar.hidden = entry.isIntersecting || window.innerWidth > 640;
+    if (!bar.hidden) sync();
+  }, { threshold: 0 }).observe(controls);
+  bar.querySelector("#mini-filters").addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+  bar.querySelectorAll(".mini-views button").forEach(b => b.addEventListener("click", () => { setView(b.dataset.view); sync(); }));
+})();
 
 // Stars inside map popups. Popups live under #map, not the grid or the modal, so neither of
 // those delegated handlers sees them. stopPropagation keeps the click from reaching the
