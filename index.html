@@ -593,6 +593,18 @@
       cursor: help;
     }
     .lu-status.lu-stuck { color: #fb923c; }
+    .site-pill {
+      font-size: 11px; font-weight: 600;
+      padding: 2px 8px; border-radius: 20px;
+      background: var(--surface2); color: var(--muted); border: 1px solid var(--border);
+      cursor: help;
+    }
+    .group-toggle {
+      background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 12px; font-size: 13px; cursor: pointer; font: inherit;
+    }
+    .group-toggle:hover { border-color: var(--accent); }
+    .group-toggle.active { background: var(--accent); color: #fff; border-color: var(--accent); }
     .rp-link { cursor: pointer; border-radius: 4px; }
     .rp-link:hover, .rp-link:focus-visible { background: var(--surface2); outline: none; }
     .rp-link:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
@@ -1218,6 +1230,11 @@
       <option value="date_asc">Oldest First</option>
       <option value="address">Address A–Z</option>
     </select>
+  </div>
+
+  <div class="filter-group">
+    <label for="btn-group">Show</label>
+    <button id="btn-group" class="group-toggle" title="One card per address instead of one per permit. SDCI stamps a project's value on every sub-permit, so six demolition permits at 8100 2nd Ave S each read $38.1M — grouped, that's one project.">⌂ By site</button>
   </div>
 
   <input type="text" id="search" placeholder="Search address or description…" aria-label="Search address or description" style="min-width:200px" />
@@ -2692,6 +2709,34 @@ function isSiteWorkPermit(p) {
 const GRID_PAGE = 300;   // cards per page — render incrementally so 5k results don't lock up the DOM
 let gridLimit = GRID_PAGE;
 
+// One representative per address. The map already groups this way; the grid didn't, so a
+// cold load opened on six demolition sub-permits at 8100 2ND AVE S each stamped $38.1M —
+// 1,819 permits carry the same estprojectcost as a sibling at their address, and "Total
+// Value" read $178.86B where max-per-address gives $104.30B.
+//
+// The representative is the FIRST permit at each address in the already-sorted input, not
+// the most-recently-active one the map uses. That keeps the user's chosen sort meaningful
+// ("Highest Value" still puts the biggest project first); picking by activity would quietly
+// re-sort the grid by a rule nobody selected. Site-level facts ride on the representative.
+function groupSites(permits) {
+  const seen = new Map();
+  const out = [];
+  for (const p of permits) {
+    const k = normalizeAddr(p) || `__${p.permitnum}`;   // no address: stays its own card
+    let rep = seen.get(k);
+    if (!rep) {
+      rep = Object.assign(Object.create(Object.getPrototypeOf(p)), p);   // copy — never mutate allPermits
+      rep._siteN = 0; rep._siteMaxVal = 0; rep._siteNew = false; rep._siteChanged = false;
+      seen.set(k, rep); out.push(rep);
+    }
+    rep._siteN++;
+    rep._siteMaxVal = Math.max(rep._siteMaxVal, parseFloat(p.estprojectcost) || 0);
+    if (isNewSinceVisit(p)) rep._siteNew = true;
+    if (watchChanges[p.permitnum]) rep._siteChanged = true;
+  }
+  return out;
+}
+
 function renderGrid(permits) {
   const grid = document.getElementById("grid-view");
 
@@ -2717,7 +2762,8 @@ function renderGrid(permits) {
     banner = `<div class="visit-banner is-link" role="button" tabindex="0" title="Show only these">${bits.join(", ")} since your last visit (${fmtDate(lastVisit)}) · <u>show them</u></div>`;
   }
 
-  const shown = permits.slice(0, gridLimit);
+  const list = groupBySite ? groupSites(permits) : permits;
+  const shown = list.slice(0, gridLimit);
   grid.innerHTML = banner + shown.map(p => {
     const status     = getStatus(p);
     const use        = getBuildingUse(p);
@@ -2780,8 +2826,8 @@ function renderGrid(permits) {
       <div class="card-header">
         <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
         <span style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-          ${isNewSinceVisit(p) ? `<span class="chip-new" title="Filed or issued since your last visit">NEW</span>` : ""}
-          ${changedFrom ? `<span class="chip-changed" title="Was ${statusLabel(changedFrom)} on your last visit">CHANGED</span>` : ""}
+          ${(isNewSinceVisit(p) || p._siteNew) ? `<span class="chip-new" title="${p._siteNew && !isNewSinceVisit(p) ? "A permit at this address was filed or issued since your last visit" : "Filed or issued since your last visit"}">NEW</span>` : ""}
+          ${(changedFrom || p._siteChanged) ? `<span class="chip-changed" title="${changedFrom ? `Was ${statusLabel(changedFrom)} on your last visit` : "A permit at this address changed status since your last visit"}">CHANGED</span>` : ""}
           <button class="star-btn${isWatched(p) ? " starred" : ""}" data-pn="${num}" title="${isWatched(p) ? "Stop watching" : "Watch this project"}">${isWatched(p) ? "★" : "☆"}</button>
           <span class="badge ${status}">${statusLabel(status)}</span>
         </span>
@@ -2832,6 +2878,7 @@ function renderGrid(permits) {
         ${lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : ""}
         ${stuckBadgesHTML(p, false)}
         ${luStatusHTML(p)}
+        ${p._siteN > 1 ? `<span class="site-pill" title="Grouped by address — open the card to page through all ${p._siteN} permits here">+${p._siteN - 1} more at this address</span>` : ""}
       </div>
 
       <div class="card-footer">
@@ -2844,9 +2891,9 @@ function renderGrid(permits) {
       </div>
     </div>`;
   }).join("")
-  + (permits.length > gridLimit
+  + (list.length > gridLimit
       ? `<button class="btn secondary" id="show-more" style="grid-column:1/-1;justify-self:center;padding:10px 28px">
-           Show ${Math.min(GRID_PAGE, permits.length - gridLimit).toLocaleString()} more (${(permits.length - gridLimit).toLocaleString()} remaining)
+           Show ${Math.min(GRID_PAGE, list.length - gridLimit).toLocaleString()} more (${(list.length - gridLimit).toLocaleString()} remaining)
          </button>`
       : "");
 
@@ -4641,11 +4688,16 @@ function getFilteredList() {
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 function updateStats(permits) {
-  const mf       = permits.filter(p => getBuildingUse(p) === "multifamily").length;
-  const office   = permits.filter(p => ["office","mixed-use","commercial"].includes(getBuildingUse(p))).length;
-  const totalVal = permits.reduce((s, p) => s + (parseFloat(p.estprojectcost)||0), 0);
+  // Grouped: count sites, and value each site once at its largest permit — the honest
+  // reading when SDCI has stamped one project's cost on every sub-permit.
+  const list     = groupBySite ? groupSites(permits) : permits;
+  const mf       = list.filter(p => getBuildingUse(p) === "multifamily").length;
+  const office   = list.filter(p => ["office","mixed-use","commercial"].includes(getBuildingUse(p))).length;
+  const totalVal = groupBySite
+    ? list.reduce((s, p) => s + (p._siteMaxVal || 0), 0)
+    : permits.reduce((s, p) => s + (parseFloat(p.estprojectcost)||0), 0);
 
-  document.getElementById("stat-total").textContent       = permits.length.toLocaleString();
+  document.getElementById("stat-total").textContent       = list.length.toLocaleString();
   document.getElementById("stat-multifamily").textContent = mf.toLocaleString();
   document.getElementById("stat-office").textContent      = office.toLocaleString();
   document.getElementById("stat-value").textContent       = fmtValue(totalVal);
@@ -4928,6 +4980,11 @@ document.getElementById("btn-streetwork").addEventListener("click", toggleStreet
 document.getElementById("btn-stalled").addEventListener("click", toggleStalledFilter);
 document.getElementById("btn-dormant").addEventListener("click", toggleDormantFilter);
 document.getElementById("btn-changed").addEventListener("click", toggleChangedFilter);
+document.getElementById("btn-group").addEventListener("click", () => {
+  groupBySite = !groupBySite;
+  document.getElementById("btn-group").classList.toggle("active", groupBySite);
+  applyFilters();   // a full re-render on purpose: the list's shape changes, paging restarts
+});
 
 // Copy link: the URL already describes the full view (syncState keeps it current), so this
 // is just the clipboard write plus a moment of feedback on the button itself.
