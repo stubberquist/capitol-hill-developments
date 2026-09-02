@@ -45,6 +45,12 @@ const EXPECT = {
   // Street activity is fetched fire-and-forget with errors swallowed, so a permanently
   // broken SDOT feed would otherwise report CLEAN forever. It sits around 270.
   streetActivity: 100,
+  // The Stalled filter went from 28 results to zero on 2026-09-01 when SDCI nulled the
+  // expiresdate column, and this check said CLEAN for three weeks because nothing asserted
+  // on it. Stalled now has three independent signals and sits in the hundreds; a floor of
+  // 10 catches it collapsing without tripping on ordinary week-to-week drift.
+  stalled: 10,
+  dormant: 10,
 };
 
 // Everything that needs tearing down, whatever way we exit.
@@ -221,6 +227,8 @@ const data = interactive ? await evaluate(`({
   nonMhaZones: (typeof nonMhaZones!=="undefined" && nonMhaZones) ? nonMhaZones.length : 0,
   pendingRezones: (typeof pendingRezones!=="undefined" && pendingRezones) ? pendingRezones.length : 0,
   streetActivity: typeof STREET_ACTIVITY!=="undefined" ? Object.keys(STREET_ACTIVITY).length : 0,
+  stalled: typeof isStalled==="function" ? allPermits.filter(isStalled).length : 0,
+  dormant: typeof isDormant==="function" ? allPermits.filter(isDormant).length : 0,
   cards: document.querySelectorAll(".card").length,
   sipFetched: typeof SIP_FETCHED!=="undefined" ? SIP_FETCHED : null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,

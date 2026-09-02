@@ -156,6 +156,9 @@
         grid-column: 1 / -1;
         margin-left: 0;
         justify-content: center;
+        /* Eight buttons measured 456px wide on a 390px screen with no wrap: the body scrolled
+           sideways, "Analytics" clipped mid-word and the theme button sat off-screen. */
+        flex-wrap: wrap;
       }
       header { flex-direction: column; align-items: flex-start; gap: 12px; }
       .stats { gap: 12px; }
@@ -385,6 +388,7 @@
     .street-line.upcoming { color: var(--accent2); }
     .badge.pending   { background: rgba(167,139,250,0.15); color: var(--accent2); }
     .badge.expired   { background: rgba(251,146,60,0.15);  color: #fb923c; }
+    .badge.approved  { background: rgba(45,212,191,0.15);  color: #2dd4bf; }
     .badge.cancelled { background: rgba(248,113,113,0.12); color: var(--red); }
     .badge.other     { background: rgba(100,116,139,0.15); color: var(--muted); }
 
@@ -567,6 +571,16 @@
       margin-top: 2px;
       color: #fb923c;
       background: rgba(251,146,60,0.14);
+      cursor: help;
+    }
+    /* Same shape as lapsed, distinct hues so the three "it's sat too long" states read
+       apart at a glance: orange = lapsed, teal = approved-not-issued, violet = dormant. */
+    .lapsed-badge.approved-badge { color: #2dd4bf; background: rgba(45,212,191,0.14); }
+    .lapsed-badge.dormant-badge  { color: #c084fc; background: rgba(192,132,252,0.14); }
+    .review-stats {
+      font-size: 11.5px;
+      color: var(--muted);
+      margin: -6px 0 12px;
       cursor: help;
     }
 
@@ -1120,6 +1134,7 @@
       <label class="ms-option"><input type="checkbox" value="issued"> In Progress</label>
       <label class="ms-option"><input type="checkbox" value="complete"> Completed</label>
       <label class="ms-option"><input type="checkbox" value="review"> In Review</label>
+      <label class="ms-option"><input type="checkbox" value="approved"> Approved · Awaiting Issuance</label>
       <label class="ms-option"><input type="checkbox" value="pending"> Pending / Applied</label>
       <label class="ms-option"><input type="checkbox" value="expired"> Expired</label>
       <label class="ms-option"><input type="checkbox" value="cancelled"> Cancelled</label>
@@ -1176,7 +1191,8 @@
   <div class="view-toggle">
     <button id="btn-watched" title="Show only starred projects">★ Watched</button>
     <button id="btn-streetwork" title="Show only projects with active or upcoming street closures">⚠ Street Work</button>
-    <button id="btn-stalled" title="Show only projects whose permit was issued, has passed its expiry date, and was never completed">◷ Stalled</button>
+    <button id="btn-stalled" title="Issued permits that have lapsed or sat 5+ years unfinished, or reviews with no activity in 2+ years">◷ Stalled</button>
+    <button id="btn-dormant" title="Sent back for corrections and left in the applicant's court for over a year">⏸ Dormant</button>
     <button id="btn-grid" class="active">⊞ Cards</button>
     <button id="btn-map">⊕ Map</button>
     <button id="btn-analytics">∿ Analytics</button>
@@ -1422,6 +1438,7 @@ let legendCollapsed = loadJSON("chd-legend-collapsed", true) === true;
 let watchedOnly = false;
 let streetWorkOnly = false;
 let stalledOnly    = false;
+let dormantOnly    = false;
 const watchlist = new Set(loadJSON("chd-watchlist", []));
 const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); } catch { return null; } })();
 const watchStatusPrev = loadJSON("chd-watch-status", {});
@@ -1452,6 +1469,12 @@ function toggleStalledFilter() {
   applyFilters();
 }
 
+function toggleDormantFilter() {
+  dormantOnly = !dormantOnly;
+  document.getElementById("btn-dormant").classList.toggle("active", dormantOnly);
+  applyFilters();
+}
+
 // Both toggles depend on Seattle-only data — SDOT for street work, SDCI's expiry date for
 // stalled — so they're meaningless (and would return zero results) for Bellevue. Hidden
 // there, and the filter is cleared first so it can't strand the view on an empty list.
@@ -1460,6 +1483,7 @@ function syncCityOnlyButtons() {
   for (const [id, get, clear] of [
     ["btn-streetwork", () => streetWorkOnly, () => { streetWorkOnly = false; }],
     ["btn-stalled",    () => stalledOnly,    () => { stalledOnly = false; }],
+    ["btn-dormant",    () => dormantOnly,    () => { dormantOnly = false; }],
   ]) {
     const btn = document.getElementById(id);
     if (!btn) continue;
@@ -2205,13 +2229,30 @@ function getMHAStatus(p, sitePermits) {
 // ── Status helpers ───────────────────────────────────────────────────────────
 function getStatus(p) {
   const s = (p.statuscurrent || p.statusdescription || p.status || "").toLowerCase();
+  // These three checks run BEFORE the completion regex below on purpose. "Reviews Completed"
+  // and "Application Completed" both matched \bcompleted\b and were labelled Completed — 85
+  // permits shown as finished buildings when one is post-review-pre-issuance and the other
+  // is an intake stage where only the FORM is complete. Order is the whole fix.
+  //
+  // Approved: SDCI has signed off, the applicant hasn't picked the permit up. Issued permits
+  // go ready→issued in a median of 0 days, so anything sitting here for weeks is an anomaly
+  // (unpaid fees, stalled financing) and the most interesting state in the dataset. It fell
+  // through to grey "Other" before.
+  if (s.includes("ready for issuance") || s.includes("reviews completed") || s.includes("ready to issue")) return "approved";
+  // Intake stages. "Scheduled" is the earliest state there is — 378 of 381 have no
+  // applieddate yet — and was also landing in "Other".
+  if (s.includes("application completed") || s.includes("scheduled") ||
+      s.includes("ready for intake") || s.includes("initiated")) return "pending";
+  // Post-issuance construction states that read as neither "issued" nor "complete".
+  if (s.includes("approved to occupy") || s.includes("inspections completed")) return "complete";
+  if (s === "active") return "issued";
   // "complete" as a substring also matches "Completeness Check" (an early intake stage) and
   // "Not Complete" (its opposite) — require it as a whole word and not preceded by "not".
   const isComplete = /\bcomplete(d)?\b/.test(s) && !/\bnot\s+complete/.test(s);
   if (s.includes("final") || s.includes("closed") || isComplete) return "complete";
   if (s.includes("issued") || s.includes("permit issued")) return "issued";
   if (s.includes("review") || s.includes("design") || s.includes("in queue") ||
-      s.includes("correction") || s.includes("additional info")) return "review";
+      s.includes("correction") || s.includes("additional info") || s.includes("awaiting information")) return "review";
   if (s.includes("pending") || s.includes("application") || s.includes("submitted") ||
       s.includes("accepted") || s === "applied") return "pending";
   // Expired is deliberately NOT folded in with cancelled/withdrawn below. They mean
@@ -2255,19 +2296,85 @@ function permitLapsed(p) {
 // "Stalled" is the union of both cases: issued, past expiry, never completed. It reads
 // across the status buckets on purpose — a stalled project can sit in either "expired"
 // or a stale "issued", and the question "what got approved and then died?" spans both.
+// Stalled no longer hangs off a single upstream field. It used to require expiresdate, and
+// on 2026-09-01 SDCI nulled that column on all 192,678 rows — the filter went from 28
+// results to "No results" and nothing noticed for three weeks, because the health check had
+// no assertion on it. Three independent signals now, any of which qualifies:
+//   1. the lapsed test (expiresdate passed) — still the best signal when the field exists
+//   2. issued 5+ years ago and never completed — a permit that's been live that long with
+//      no finaling has almost certainly stopped
+//   3. in review with no milestone activity for 2+ years — 302 permits sit here
+const STALLED_ISSUED_YEARS = 5;
+const STALLED_REVIEW_YEARS = 2;
 function isStalled(p) {
-  if (p._city === "bellevue" || !p.issueddate || p.completeddate) return false;
+  if (p._city === "bellevue" || p.completeddate) return false;
   const st = getStatus(p);
-  if (st !== "issued" && st !== "expired") return false;
-  if (!p.expiresdate) return false;
-  const t = permitDateMs(p.expiresdate);
-  if (!Number.isFinite(t) || t >= seattleTodayMs()) return false;
-  const iss = permitDateMs(p.issueddate);        // same backwards-date guard as permitLapsed
-  return !Number.isFinite(iss) || t > iss;
+  const now = seattleTodayMs();
+  if (st === "issued" || st === "expired") {
+    if (permitLapsed(p)) return true;                       // signal 1
+    const iss = permitDateMs(p.issueddate);                 // signal 2
+    return Number.isFinite(iss) && now - iss > STALLED_ISSUED_YEARS * 365.25 * 86400000;
+  }
+  if (st === "review") {                                    // signal 3
+    const last = lastActivityDate(p);
+    return last > 0 && now - last > STALLED_REVIEW_YEARS * 365.25 * 86400000;
+  }
+  return false;
+}
+
+// The pre-issuance cousin of Stalled: SDCI reviewed it, sent corrections back, and the
+// applicant went quiet. daysoutcorrections is cumulative across review rounds, so on a
+// multi-cycle permit it overstates the CURRENT wait — label it "in the applicant's court",
+// never "waiting since". Verified live: for single-cycle permits it equals days since
+// initialreviewcompletedate within a day. 256 permits sit here over a year, carrying 9,811
+// homes and $2.6B; the longest has been out 4,602 days across five rounds.
+const DORMANT_DAYS = 365;
+function dormantDays(p) {
+  if (p._city === "bellevue") return 0;
+  if (!/corrections? required/i.test(p.statuscurrent || "")) return 0;
+  const d = parseFloat(p.daysoutcorrections);
+  return Number.isFinite(d) && d > 0 ? d : 0;
+}
+function isDormant(p) { return dormantDays(p) > DORMANT_DAYS; }
+
+// Days since SDCI marked a permit ready to issue, for permits the applicant still hasn't
+// picked up. Issued permits go ready→issued in a median of 0 days (p90 27), so anything
+// past ~30 here is genuinely unusual. 74 unissued permits carry a readytoissuedate today;
+// 50 are over a year old, 24 over 1,000 days, together 1,362 homes and $954M.
+function approvedAgeDays(p) {
+  if (p._city === "bellevue" || p.issueddate || !p.readytoissuedate) return 0;
+  if (getStatus(p) !== "approved") return 0;
+  const t = permitDateMs(p.readytoissuedate);
+  if (!Number.isFinite(t)) return 0;
+  return Math.max(0, Math.floor((seattleTodayMs() - t) / 86400000));
+}
+
+// "2.1 yrs" / "14 mo" / "23 d" — for the how-long-has-it-sat badges.
+function fmtDuration(days) {
+  if (days >= 365) return `${(days / 365.25).toFixed(1).replace(/\.0$/, "")} yrs`;
+  if (days >= 60)  return `${Math.round(days / 30.44)} mo`;
+  return `${Math.round(days)} d`;
+}
+
+// The two "it's sat too long" badges, shared by the card and the map popup so they can't
+// drift. Returns HTML or "". Compact styling reuses .lapsed-badge, which is exactly the same
+// kind of message.
+function stuckBadgesHTML(p, inline) {
+  const style = inline ? ' style="margin-top:0"' : "";
+  const out = [];
+  const a = approvedAgeDays(p);
+  if (a > 30) out.push(`<span class="lapsed-badge approved-badge"${style} title="SDCI marked this ready to issue on ${esc(fmtDate(p.readytoissuedate))}. Issued permits are usually picked up the same day, so this is likely unpaid fees or a stalled financing decision.">Approved ${esc(fmtDuration(a))} ago · not issued</span>`);
+  const d = dormantDays(p);
+  if (d > DORMANT_DAYS) {
+    const cycles = parseInt(p.numberreviewcycles, 10);
+    out.push(`<span class="lapsed-badge dormant-badge"${style} title="Cumulative days this permit has spent in the applicant's court across all review rounds. SDCI sent corrections back and is waiting on a response.">Awaiting applicant ${esc(fmtDuration(d))}${Number.isFinite(cycles) && cycles > 0 ? ` · round ${cycles}` : ""}</span>`);
+  }
+  return out.join("");
 }
 
 function statusLabel(key) {
   return { issued:"In Progress", complete:"Completed", review:"In Review",
+           approved:"Approved · Awaiting Issuance",
            pending:"Applied / Pending", expired:"Expired", cancelled:"Cancelled",
            other:"Other" }[key] ?? key;
 }
@@ -2556,6 +2663,7 @@ function renderGrid(permits) {
         ${mha ? `<div class="mha-badge" style="background:${mha.bg};color:${mha.color}">${mha.label}</div>` : ""}
         ${rezone ? `<div class="rezone-badge" title="Proposed in the Centers and Corridors legislation transmitted to Council on 28 Jan 2026${rezone.where ? ` · ${esc(rezone.where)}` : ""}. Not yet adopted — may change before any vote.">Rezone proposed · ${rezone.from ? `${esc(rezone.from)} → ` : "→ "}${esc(rezone.to)}</div>` : ""}
         ${lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : ""}
+        ${stuckBadgesHTML(p, false)}
       </div>
 
       <div class="card-footer">
@@ -2581,11 +2689,38 @@ function renderGrid(permits) {
 }
 
 // ── Project detail modal ──────────────────────────────────────────────────────
+// One line under the timeline: how rough was the ride through review. All four fields were
+// already in the payload and never read — grep count zero for numberreviewcycles and
+// daysoutcorrections before this. The identity total ≈ city + applicant holds on 96% of
+// rows, and review days climb monotonically with rounds (1 round → median 14 d, 5 → 365,
+// 9 → 1,067), so "rounds" is the single most telling number. A handful of rows carry
+// negative day counts (min −31); clamp rather than print them.
+function reviewStatsHTML(p) {
+  if (p._city === "bellevue") return "";
+  const cycles = parseInt(p.numberreviewcycles, 10);
+  const total  = Math.max(0, parseFloat(p.totaldaysplanreview) || 0);
+  const city   = Math.max(0, parseFloat(p.daysplanreviewcity)  || 0);
+  const appl   = Math.max(0, parseFloat(p.daysoutcorrections)  || 0);
+  if (!(cycles > 0) && !total && !appl) return "";   // pre-intake or demolition-only: nothing to say
+  const parts = [];
+  if (cycles > 0) parts.push(`${cycles} review round${cycles === 1 ? "" : "s"}`);
+  if (total) parts.push(`${Math.round(total)} days in review${(city || appl) ? ` (city ${Math.round(city)} · applicant ${Math.round(appl)})` : ""}`);
+  else if (appl) parts.push(`${Math.round(appl)} days in applicant's court`);
+  return `<div class="review-stats" title="Plan-review history from SDCI. 'Applicant' days are time the permit spent waiting on the applicant to respond to corrections; 'city' days are time in SDCI's queue.">${esc(parts.join(" · "))}</div>`;
+}
+
 function timelineHTML(p) {
+  // Six milestones instead of three. The intermediate dates were already in the payload
+  // and never read: initialreviewcompletedate is on 81% of permits applied 2018+,
+  // planreviewcompletedate 73%, readytoissuedate 77%. Absent fields simply render as an
+  // undone step, which is honest for demolition-only and pre-intake rows.
   const steps = [
-    { label: "Applied",   date: p.applieddate },
-    { label: "Issued",    date: p.issueddate },
-    { label: "Completed", date: p.finaleddate || p.completeddate },
+    { label: "Applied",         date: p.applieddate },
+    { label: "Initial review",  date: p.initialreviewcompletedate },
+    { label: "Review complete", date: p.planreviewcompletedate },
+    { label: "Ready to issue",  date: p.readytoissuedate },
+    { label: "Issued",          date: p.issueddate },
+    { label: "Completed",       date: p.finaleddate || p.completeddate },
   ];
   return `<div class="timeline">` + steps.map(s =>
     `<div class="t-step${s.date ? " done" : ""}">
@@ -2636,6 +2771,7 @@ function openModal(pn) {
       ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
     </div>
     ${timelineHTML(p)}
+    ${reviewStatsHTML(p)}
     <div class="modal-desc">${esc(p.description || "No description provided.")}</div>
     <div class="card-meta">
       <div class="meta-item"><span class="meta-key">Est. Value</span><span class="meta-val" style="color:var(--accent);font-weight:700">${fmtValue(p.estprojectcost)}</span></div>
@@ -2709,6 +2845,7 @@ const MAP_COLORS = {
   issued:    "#fbbf24",  // yellow  — in progress / active construction
   complete:  "#34d399",  // green   — finaled / complete
   review:    "#6c8ef5",  // blue    — in design review
+  approved:  "#2dd4bf",  // teal    — approved, awaiting issuance (between review and issued)
   pending:   "#a78bfa",  // purple  — applied / pending
   expired:   "#fb923c",  // orange  — approved then allowed to lapse
   cancelled: "#f87171",  // red     — cancelled / void
@@ -2724,6 +2861,7 @@ const MAP_LEGEND_ITEMS = [
   { key: "issued",    label: "In Progress" },
   { key: "complete",  label: "Completed" },
   { key: "review",    label: "In Review" },
+  { key: "approved",  label: "Approved · Awaiting Issuance" },
   { key: "pending",   label: "Pending / Applied" },
   { key: "expired",   label: "Expired" },
   { key: "cancelled", label: "Cancelled" },
@@ -2840,6 +2978,7 @@ function permitPopupBody(p) {
         <span class="use-tag ${use}">${useLabel(use)}</span>
         ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
         ${lapsedMs ? `<span class="lapsed-badge" style="margin-top:0">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</span>` : ""}
+        ${stuckBadgesHTML(p, true)}
       </div>
       <div class="card-desc" style="margin-bottom:10px">${desc}</div>
       <div class="card-meta" style="margin-bottom:10px">
@@ -4152,6 +4291,7 @@ function getFilteredList() {
     if (watchedOnly && !watchlist.has(p.permitnum)) return false;
     if (streetWorkOnly && !hasStreetWork(p)) return false;
     if (stalledOnly && !isStalled(p)) return false;
+    if (dormantOnly && !isDormant(p)) return false;
     if (!neighborhoodMatch(p, nbF)) return false;
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
@@ -4414,6 +4554,7 @@ document.getElementById("filter-city").addEventListener("change", async function
 document.getElementById("btn-watched").addEventListener("click", toggleWatchedFilter);
 document.getElementById("btn-streetwork").addEventListener("click", toggleStreetWorkFilter);
 document.getElementById("btn-stalled").addEventListener("click", toggleStalledFilter);
+document.getElementById("btn-dormant").addEventListener("click", toggleDormantFilter);
 document.getElementById("btn-grid").addEventListener("click", () => setView("grid"));
 document.getElementById("btn-map").addEventListener("click", () => setView("map"));
 document.getElementById("btn-analytics").addEventListener("click", () => setView("analytics"));
