@@ -51,6 +51,11 @@ const EXPECT = {
   // 10 catches it collapsing without tripping on ordinary week-to-week drift.
   stalled: 10,
   dormant: 10,
+  // Certificates of occupancy. This join is what stops 52 finished, occupied buildings from
+  // showing up on the Stalled list, and it is a separate dataset that can go the way
+  // expiresdate did — so it gets its own floor rather than being invisible if it empties.
+  // 1,897 of the app's permits carry one; 500 leaves plenty of room for ordinary drift.
+  cofo: 500,
 };
 
 // Everything that needs tearing down, whatever way we exit.
@@ -221,6 +226,17 @@ if (interactive) {
     ytdUnits: document.querySelector("#an-stats .an-stat .num")?.textContent || null })`).catch(() => null);
 }
 
+// The certificate join is fired in the background and repaints when it lands. By this point
+// the map and analytics waits above have already burned ~20s, so it is normally long since
+// settled — but a slow Socrata shouldn't be able to report an empty index as a data failure,
+// so wait for it explicitly rather than relying on that margin.
+if (interactive) {
+  for (let i = 0; i < 60; i++) {
+    if (await evaluate(`(typeof COFO_INDEX!=="undefined" && Object.keys(COFO_INDEX).length>0)`).catch(() => false)) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+}
+
 const data = interactive ? await evaluate(`({
   permits: allPermits.length,
   duplicatePermitNums: allPermits.length - new Set(allPermits.map(p=>p.permitnum)).size,
@@ -229,6 +245,7 @@ const data = interactive ? await evaluate(`({
   streetActivity: typeof STREET_ACTIVITY!=="undefined" ? Object.keys(STREET_ACTIVITY).length : 0,
   stalled: typeof isStalled==="function" ? allPermits.filter(isStalled).length : 0,
   dormant: typeof isDormant==="function" ? allPermits.filter(isDormant).length : 0,
+  cofo: typeof hasCofO==="function" ? allPermits.filter(hasCofO).length : 0,
   cards: document.querySelectorAll(".card").length,
   sipFetched: typeof SIP_FETCHED!=="undefined" ? SIP_FETCHED : null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,

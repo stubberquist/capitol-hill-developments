@@ -156,8 +156,9 @@
         grid-column: 1 / -1;
         margin-left: 0;
         justify-content: center;
-        /* Eight buttons measured 456px wide on a 390px screen with no wrap: the body scrolled
-           sideways, "Analytics" clipped mid-word and the theme button sat off-screen. */
+        /* Ten buttons measured 456px wide on a 390px screen with no wrap: the body scrolled
+           sideways, "Analytics" clipped mid-word and the theme button sat off-screen. The row
+           is five controls now, but it still wraps — a phone can't hold them side by side. */
         flex-wrap: wrap;
       }
       header { flex-direction: column; align-items: flex-start; gap: 12px; }
@@ -259,7 +260,49 @@
       margin-left: auto;
       display: flex;
       gap: 4px;
+      align-items: center;
     }
+
+    /* Cards / Map / Analytics read as one control because they are one choice. The three
+       former filter buttons and two utility buttons that used to sit in this row alongside
+       them made the primary navigation impossible to pick out of ten identical pills. */
+    .seg { display: flex; gap: 0; }
+    .seg button { border-radius: 0; margin-left: -1px; }
+    .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+    .seg button:last-child  { border-radius: 0 6px 6px 0; }
+    .seg button.active { position: relative; z-index: 1; }
+
+    /* ── Overflow menu (copy link, export, theme) ── */
+    .menu-group { position: relative; }
+    .menu-panel {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 100;
+      min-width: 200px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .menu-panel[hidden] { display: none; }
+    .menu-panel button {
+      background: none;
+      border: none;
+      color: var(--text);
+      text-align: left;
+      padding: 7px 9px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .menu-panel button:hover { background: var(--surface2); }
+    #btn-more { min-width: 34px; font-size: 15px; line-height: 1; }
 
     .view-toggle button {
       background: var(--surface2);
@@ -593,6 +636,16 @@
       cursor: help;
     }
     .lu-status.lu-stuck { color: #fb923c; }
+    /* Green on purpose: this is the one line in the modal that says the building exists and
+       people are in it, which is a stronger claim than any status string above it. */
+    .cofo-status {
+      flex-basis: 100%;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--green);
+      margin: -4px 0 10px;
+      cursor: help;
+    }
     .site-pill {
       font-size: 11px; font-weight: 600;
       padding: 2px 8px; border-radius: 20px;
@@ -748,7 +801,6 @@
     }
     .chip-new     { background: rgba(52, 211, 153, 0.15); color: var(--green); }
     .chip-changed { background: rgba(251, 191, 36, 0.15); color: var(--yellow); }
-    #btn-watched.active { background: var(--yellow); color: #1a1d27; border-color: var(--yellow); }
     .visit-banner {
       font-size: 12px; color: var(--muted);
       padding: 8px 12px; margin-bottom: 14px;
@@ -781,8 +833,11 @@
     .modal .modal-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
     .modal .modal-desc { font-size: 13px; line-height: 1.5; margin: 12px 0; color: var(--text); }
     .modal .card-meta { margin: 12px 0; }
-    .timeline { display: flex; align-items: flex-start; margin: 18px 0 6px; }
-    .timeline .t-step { flex: 1; text-align: center; position: relative; }
+    /* Seven steps since the occupancy milestone landed. They fit side by side on a desktop
+       modal; on a phone the row would crush "Review complete" to one character per line, so
+       it scrolls instead — same treatment any wide block gets. */
+    .timeline { display: flex; align-items: flex-start; margin: 18px 0 6px; overflow-x: auto; }
+    .timeline .t-step { flex: 1 0 auto; min-width: 64px; text-align: center; position: relative; }
     .timeline .t-dot {
       width: 12px; height: 12px; border-radius: 50%;
       background: var(--border); margin: 0 auto 6px; position: relative; z-index: 1;
@@ -804,8 +859,6 @@
     }
     .related-permits .rp-row span:last-child { color: var(--muted); white-space: nowrap; }
 
-    /* ── Theme toggle ── */
-    #btn-theme { min-width: 38px; }
 
     /* ── Map pins & clusters (both L.Marker/divIcon — same pane, so stacking/spiderfy z-order works) ── */
     .chd-pin { background: none; border: none; }
@@ -1232,24 +1285,41 @@
     </select>
   </div>
 
-  <div class="filter-group">
-    <label for="btn-group">Show</label>
-    <button id="btn-group" class="group-toggle" title="One card per address instead of one per permit. SDCI stamps a project's value on every sub-permit, so six demolition permits at 8100 2nd Ave S each read $38.1M — grouped, that's one project.">⌂ By site</button>
+  <!-- The five quick filters were five separate toolbar buttons. They're checkboxes in one
+       dropdown now, matching Status and Building Use above: they combine the same way (all
+       of them AND together), so they always belonged in the same control shape. -->
+  <div class="filter-group ms-group" id="ms-flags">
+    <label>Flags</label>
+    <button type="button" class="ms-trigger"><span class="ms-text">None</span> <span class="ms-caret">▾</span></button>
+    <div class="ms-panel" hidden>
+      <label class="ms-option" title="Show only starred projects"><input type="checkbox" value="watched"> ★ Watched</label>
+      <label class="ms-option" title="Projects with active or upcoming street closures"><input type="checkbox" value="street"> ⚠ Street work</label>
+      <label class="ms-option" title="Issued permits that have lapsed or sat 5+ years unfinished, or reviews with no activity in 2+ years"><input type="checkbox" value="stalled"> ◷ Stalled</label>
+      <label class="ms-option" title="Sent back for corrections and left in the applicant's court for over a year"><input type="checkbox" value="dormant"> ⏸ Dormant</label>
+      <label class="ms-option" title="Filed, issued, or changed status since your last visit"><input type="checkbox" value="changed"> ◆ Changed since last visit</label>
+    </div>
   </div>
 
   <input type="text" id="search" placeholder="Search address or description…" aria-label="Search address or description" style="min-width:200px" />
 
   <div class="view-toggle">
-    <button id="btn-watched" title="Show only starred projects">★ Watched</button>
-    <button id="btn-streetwork" title="Show only projects with active or upcoming street closures">⚠ Street Work</button>
-    <button id="btn-stalled" title="Issued permits that have lapsed or sat 5+ years unfinished, or reviews with no activity in 2+ years">◷ Stalled</button>
-    <button id="btn-dormant" title="Sent back for corrections and left in the applicant's court for over a year">⏸ Dormant</button>
-    <button id="btn-changed" title="Filed, issued, or changed status since your last visit">◆ Changed</button>
-    <button id="btn-grid" class="active">⊞ Cards</button>
-    <button id="btn-map">⊕ Map</button>
-    <button id="btn-analytics">∿ Analytics</button>
-    <button id="btn-copylink" title="Copy a link to exactly this view — filters, neighborhood, map layers and all">⧉ Link</button>
-    <button id="btn-theme" title="Switch light/dark theme">◐</button>
+    <!-- Stays a visible button rather than moving into the overflow menu: it changes the
+         headline value from $178.86B to $104.30B, which is too consequential to hide. -->
+    <button id="btn-group" class="group-toggle" title="One card per address instead of one per permit. SDCI stamps a project's value on every sub-permit, so six demolition permits at 8100 2nd Ave S each read $38.1M — grouped, that's one project.">⌂ By site</button>
+    <span class="seg">
+      <button id="btn-grid" class="active">⊞ Cards</button>
+      <button id="btn-map">⊕ Map</button>
+      <button id="btn-analytics">∿ Analytics</button>
+    </span>
+    <!-- Actions rather than filters: nothing here changes what you're looking at. -->
+    <div class="menu-group" id="more-menu">
+      <button type="button" id="btn-more" title="More actions" aria-haspopup="true" aria-expanded="false">⋯</button>
+      <div class="menu-panel" hidden>
+        <button type="button" id="btn-copylink">⧉ Copy link to this view</button>
+        <button type="button" id="btn-export">⭳ Export CSV</button>
+        <button type="button" id="btn-theme">◐ Switch theme</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1285,6 +1355,7 @@
       <div class="an-chart-card" id="card-outcomes"><h3>Permit Outcomes by Filing Year</h3><p class="an-desc">Where each year's applications ended up: issued, abandoned (cancelled, withdrawn, expired, or denied before issuance), or still in process. Recent years are naturally more pending.</p><div class="chart-wrap"><canvas id="chart-outcomes"></canvas></div></div>
       <div class="an-chart-card" id="card-adu"><h3>ADU &amp; Backyard Cottage Permits per Year</h3><p class="an-desc">Permits for accessory dwelling units — basement apartments and backyard cottages — identified from project descriptions. All project sizes, regardless of the $1M+ toggle.</p><div class="chart-wrap"><canvas id="chart-adu"></canvas></div></div>
       <div class="an-chart-card" id="card-nbhd"><h3>Units Added by Area · Trailing 12 Months</h3><p class="an-desc">Homes created by permits filed in the last 12 months, by neighborhood. Boundaries follow the City Clerk&rsquo;s Neighborhood Map Atlas; each permit is counted once.</p><div class="chart-wrap"><canvas id="chart-nbhd"></canvas></div></div>
+      <div class="an-chart-card" id="card-builders"><h3>Who Built the Homes · 2015–2020</h3><p class="an-desc">Homes permitted by contractor, from SDCI&rsquo;s contractor field. Fixed to 2015&ndash;2020 on purpose: the city recorded a contractor on 30&ndash;39% of these permits through 2020 and only 2&ndash;5% since, so later years would rank who still gets recorded rather than who builds. Spelling variants of one company are merged; demolition records are excluded so a project&rsquo;s homes aren&rsquo;t counted twice. A partial record of the era, not a league table.</p><div class="chart-wrap"><canvas id="chart-builders"></canvas></div></div>
       <div class="an-chart-card" id="card-rent"><h3>Typical Asking Rent · 10 Years</h3><p class="an-desc">Zillow Observed Rent Index: the typical market-rate asking rent across all rental types, smoothed and seasonally adjusted.</p><div class="chart-wrap"><canvas id="chart-rent"></canvas></div><div class="an-src">Data: Zillow Research (ZORI)</div></div>
       <div class="an-chart-card" id="card-home"><h3>Typical Home Value · 10 Years</h3><p class="an-desc">Zillow Home Value Index: the typical value of mid-tier homes (35th–65th percentile), smoothed and seasonally adjusted. Dashed gray line: average 30-year mortgage rate (right axis).</p><div class="chart-wrap"><canvas id="chart-home"></canvas></div><div class="an-src">Data: Zillow Research (ZHVI) · FRED (mortgage rate)</div></div>
       <div class="an-chart-card" id="card-pop"><h3>Metro Population Growth per Year</h3><p class="an-desc">New residents added to the Seattle–Tacoma–Bellevue metro each year — the demand side of the housing equation.</p><div class="chart-wrap"><canvas id="chart-pop"></canvas></div><div class="an-src">Data: FRED / U.S. Census Bureau (MSA)</div></div>
@@ -1543,51 +1614,49 @@ function toggleWatch(pn) {
   applyFilters({ preserveView: true });
 }
 
-function toggleWatchedFilter() {
-  watchedOnly = !watchedOnly;
-  document.getElementById("btn-watched").classList.toggle("active", watchedOnly);
+// The five quick filters live in one dropdown now, but each stays its own boolean rather
+// than becoming an array: the URL keys they produce (?watched=1&stalled=1 …) are already out
+// in links people have shared, and those have to keep resolving to the same view.
+const FLAGS = [
+  ["watched", () => watchedOnly,    v => { watchedOnly    = v; }],
+  ["street",  () => streetWorkOnly, v => { streetWorkOnly = v; }],
+  ["stalled", () => stalledOnly,    v => { stalledOnly    = v; }],
+  ["dormant", () => dormantOnly,    v => { dormantOnly    = v; }],
+  ["changed", () => changedOnly,    v => { changedOnly    = v; }],
+];
+
+// Push the booleans back into the dropdown. Needed whenever something outside the dropdown
+// changes them — a deep link on load, the "show them" visit banner, a city switch clearing
+// the Seattle-only ones — so the trigger label never disagrees with what's being filtered.
+function syncFlagUI() {
+  multiSelects["ms-flags"]?.set(FLAGS.filter(([, get]) => get()).map(([k]) => k));
+}
+
+function setFlag(key, on) {
+  const f = FLAGS.find(([k]) => k === key);
+  if (!f) return;
+  f[2](on);
+  syncFlagUI();
   applyFilters();
 }
 
-function toggleStreetWorkFilter() {
-  streetWorkOnly = !streetWorkOnly;
-  document.getElementById("btn-streetwork").classList.toggle("active", streetWorkOnly);
-  applyFilters();
-}
+// Kept as a named function because the return-visit banner is a second way into this filter.
+function toggleChangedFilter() { setFlag("changed", !changedOnly); }
 
-function toggleStalledFilter() {
-  stalledOnly = !stalledOnly;
-  document.getElementById("btn-stalled").classList.toggle("active", stalledOnly);
-  applyFilters();
-}
-
-function toggleDormantFilter() {
-  dormantOnly = !dormantOnly;
-  document.getElementById("btn-dormant").classList.toggle("active", dormantOnly);
-  applyFilters();
-}
-
-function toggleChangedFilter() {
-  changedOnly = !changedOnly;
-  document.getElementById("btn-changed").classList.toggle("active", changedOnly);
-  applyFilters();
-}
-
-// Both toggles depend on Seattle-only data — SDOT for street work, SDCI's expiry date for
-// stalled — so they're meaningless (and would return zero results) for Bellevue. Hidden
-// there, and the filter is cleared first so it can't strand the view on an empty list.
+// Three of the flags depend on Seattle-only data — SDOT for street work, SDCI's dates for
+// stalled and dormant — so they're meaningless (and would return zero results) for Bellevue.
+// The options are hidden there, and any that were on are cleared first so a city switch
+// can't strand the view on an empty list.
 function syncCityOnlyButtons() {
   const supported = currentCity !== "bellevue";
-  for (const [id, get, clear] of [
-    ["btn-streetwork", () => streetWorkOnly, () => { streetWorkOnly = false; }],
-    ["btn-stalled",    () => stalledOnly,    () => { stalledOnly = false; }],
-    ["btn-dormant",    () => dormantOnly,    () => { dormantOnly = false; }],
-  ]) {
-    const btn = document.getElementById(id);
-    if (!btn) continue;
-    if (!supported && get()) { clear(); btn.classList.remove("active"); }
-    btn.hidden = !supported;
+  const panel = document.querySelector("#ms-flags .ms-panel");
+  for (const key of ["street", "stalled", "dormant"]) {
+    const f = FLAGS.find(([k]) => k === key);
+    if (!supported && f[1]()) f[2](false);
+    const opt = panel?.querySelector(`input[value="${key}"]`)?.closest(".ms-option");
+    if (opt) opt.hidden = !supported;
   }
+  syncFlagUI();
 }
 
 // ISO strings compare lexically, so string > string works for "is after"
@@ -1652,6 +1721,25 @@ applyTheme(currentTheme);
 // ── Fetch ────────────────────────────────────────────────────────────────────
 // Socrata caps each response at $limit, so a query that can match more than one page
 // must paginate with $offset — mirrors arcFetchAll's approach for the Bellevue layer.
+// Every column the app actually reads, and nothing else. Without a $select Socrata returns
+// all 40, and 27% of the payload was fields with zero references anywhere in this file:
+// location1 (349 KB/page — a duplicate of latitude/longitude), housingcategory, originalcity,
+// originalstate, originalzip, dependentbuilding. `link` is dropped too, and that one needs a
+// word: it IS read, at three call sites, but always as `safeUrl(p.link?.url) || …altId=${num}`,
+// and SDCI's own value is byte-for-byte what the fallback builds. So the column costs 495 KB
+// a page to supply a string the code already knows how to write. Verified against every
+// `p.<field>` access in the file before trimming — see the 2026-09-07 report.
+// Measured on one real page: 630,246 → 479,096 B on the wire, 5.18 → 3.60 MB to parse.
+const PERMIT_FIELDS = [
+  "permitnum", "permitclass", "permitclassmapped", "permittypemapped", "permittypedesc",
+  "description", "housingunits", "housingunitsadded", "estprojectcost",
+  "applieddate", "issueddate", "expiresdate", "completeddate", "statuscurrent",
+  "originaladdress1", "latitude", "longitude",
+  "daysoutcorrections", "numberreviewcycles", "totaldaysplanreview", "daysplanreviewcity",
+  "initialreviewcompletedate", "planreviewcompletedate", "readytoissuedate",
+  "relatedmup", "contractorcompanyname",
+].join(",");
+
 async function fetchPermits() {
   const pageSize = 5000;
   const maxPages = 10;
@@ -1663,6 +1751,7 @@ async function fetchPermits() {
 
   const fetchPage = async (page) => {
     const params = new URLSearchParams({
+      "$select": PERMIT_FIELDS,
       "$limit": String(pageSize),
       "$offset": String(page * pageSize),
       // permitnum breaks ties. 6,696 of ~10,900 rows share an estprojectcost with some
@@ -1971,6 +2060,99 @@ function luStatusHTML(p) {
   const stuck = /additional info|correction/i.test(lu.status);
   const tip = lu.description ? esc(lu.description.slice(0, 300)) : "Land-use (Master Use Permit) record from SDCI";
   return `<div class="lu-status${stuck ? " lu-stuck" : ""}" title="${tip}">Land use · ${bits.join(" · ")}</div>`;
+}
+
+// ── Certificate of Occupancy ─────────────────────────────────────────────────
+// The city's own certification that a building is finished and legal to occupy — a harder
+// completion signal than completeddate, which is an administrative finalling that can lag
+// for years or never land at all. 1,897 of the app's permits have one.
+//
+// This started as a bug fix. 79 permits carry a Certificate of Occupancy while their
+// completeddate is still null; 45 of those read "Expired" and 27 "Issued". 52 of them were
+// on the Stalled list — 3,333 homes and $1.32B of finished, occupied buildings filed under
+// "what got approved and then died". 1808 Minor Ave is a 382-home apartment building people
+// have lived in since January 2022, and the tracker called it dead.
+//
+// 5,191 rows, so unlike the Land Use join there's no need to chunk IN() queries against the
+// permits in hand: the whole dataset is one request and 52 KB gzipped with a $select.
+// Same Socrata host and token, so no CSP change.
+const COFO_API = "https://data.seattle.gov/resource/axkr-2p68.json";
+let COFO_INDEX = {};   // permitnum → { date: "YYYY-MM-DD" | "", type }
+
+// certificate_of_occupancy_date is a TEXT column in MM/DD/YYYY form, not a Socrata
+// calendar_date — Date.parse would read "04/12/2013" in local time and 120 rows are blank.
+// Parse it by hand into the ISO shape every other date in this file already uses.
+function cofoDateISO(v) {
+  const m = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s*$/.exec(String(v || ""));
+  return m ? `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}` : "";
+}
+
+async function fetchCofO() {
+  const params = new URLSearchParams({
+    "$select": "permit_number,certificate_of_occupancy_date,occupancy_type_s",
+    "$limit":  "20000",
+  });
+  if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
+  const res = await fetch(`${COFO_API}?${params}`);
+  if (!res.ok) throw new Error(`CofO HTTP ${res.status}`);
+  const out = {};
+  for (const r of await res.json()) {
+    const pn = String(r.permit_number || "").trim();
+    if (!pn) continue;
+    // A permit can appear more than once (phased occupancy). Keep the earliest date, which
+    // is when the building first became legally occupiable.
+    const date = cofoDateISO(r.certificate_of_occupancy_date);
+    const prev = out[pn];
+    if (prev && prev.date && date && prev.date <= date) continue;
+    out[pn] = { date, type: String(r.occupancy_type_s || "").trim() };
+  }
+  return out;
+}
+
+// Bellevue's feed has no equivalent, so a Bellevue permit is never claimed as occupied.
+function cofoFor(p) {
+  if (p._city === "bellevue") return null;
+  return COFO_INDEX[p.permitnum] || null;
+}
+function hasCofO(p) { return !!cofoFor(p); }
+
+// One line under the timeline, when the city has certified the building is occupiable.
+// occupancy_type_s is what the building actually BECAME, per inspection — a better use
+// signal than anything inferred from the applicant's description.
+function cofoStatusHTML(p) {
+  const c = cofoFor(p);
+  if (!c) return "";
+  const bits = [];
+  if (c.date) bits.push(esc(fmtDate(c.date)));
+  if (c.type) bits.push(esc(c.type));
+  return `<div class="cofo-status" title="Seattle issued a Certificate of Occupancy for this permit — the city's inspection sign-off that the building is finished and legal to occupy. A stronger completion signal than the permit's own status field.">Occupied · ${bits.join(" · ") || "certificate on file"}</div>`;
+}
+
+// Both joins ride in after the grid is already up and repaint it when they land, and both
+// must be dropped on the floor if a city switch happened while they were in flight — so they
+// share one generation gate rather than keeping two copies of the same three lines. This
+// used to be duplicated verbatim at the two init sites; the Certificate of Occupancy join
+// would have made it three.
+function startBackgroundJoins() {
+  if (currentCity === "bellevue") return;
+  const gen = dataGeneration;
+  // Land use only decorates the card and modal, so its repaint can leave the markers alone.
+  // Occupancy certificates change getStatus, which colours the cluster rings — hence remap.
+  const settle = (remap) => { if (gen === dataGeneration) applyFilters({ preserveView: true, remap }); };
+
+  // Land use needs allPermits for its id list, so it can't start alongside the permit fetch.
+  const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
+  fetchLandUse(mups)
+    .then(idx => { if (gen !== dataGeneration) return; LU_INDEX = idx; settle(false); })
+    .catch(e => console.warn("Land use fetch failed", e));
+
+  // The certificate index is the whole dataset and keyed by permit number, so it doesn't
+  // depend on which city is loaded and never goes stale within a session — switching to
+  // Bellevue and back shouldn't pay for it twice.
+  if (Object.keys(COFO_INDEX).length) { settle(true); return; }
+  fetchCofO()
+    .then(idx => { if (gen !== dataGeneration) return; COFO_INDEX = idx; settle(true); })
+    .catch(e => console.warn("Certificate of Occupancy fetch failed", e));
 }
 
 let STREET_ACTIVITY = {};
@@ -2400,6 +2582,11 @@ function getMHAStatus(p, sitePermits) {
 
 // ── Status helpers ───────────────────────────────────────────────────────────
 function getStatus(p) {
+  // A Certificate of Occupancy outranks every string below it. The city inspected the
+  // building and signed off that people can live in it; whatever the permit's own status
+  // field still says is stale by comparison. This is what stops 45 "Expired" and 27
+  // "Issued" permits — buildings that have been occupied for years — reading as unfinished.
+  if (hasCofO(p)) return "complete";
   const s = (p.statuscurrent || p.statusdescription || p.status || "").toLowerCase();
   // These three checks run BEFORE the completion regex below on purpose. "Reviews Completed"
   // and "Application Completed" both matched \bcompleted\b and were labelled Completed — 85
@@ -2418,10 +2605,16 @@ function getStatus(p) {
   // Post-issuance construction states that read as neither "issued" nor "complete".
   if (s.includes("approved to occupy") || s.includes("inspections completed")) return "complete";
   if (s === "active") return "issued";
+  // "Closed" is an administrative disposition, not a finished building. Citywide 8,967
+  // permits carry it and 8,321 of those (93%) were never issued — 8,307 never even applied;
+  // only 587 have a completeddate. Treating the word as completion put 27 permits with no
+  // applieddate, no issueddate and no completeddate on screen as green "Completed" cards,
+  // counting $466M and 70 homes as built that were never started. Decide on the evidence.
+  if (s.includes("closed")) return p.completeddate ? "complete" : "cancelled";
   // "complete" as a substring also matches "Completeness Check" (an early intake stage) and
   // "Not Complete" (its opposite) — require it as a whole word and not preceded by "not".
   const isComplete = /\bcomplete(d)?\b/.test(s) && !/\bnot\s+complete/.test(s);
-  if (s.includes("final") || s.includes("closed") || isComplete) return "complete";
+  if (s.includes("final") || isComplete) return "complete";
   if (s.includes("issued") || s.includes("permit issued")) return "issued";
   if (s.includes("review") || s.includes("design") || s.includes("in queue") ||
       s.includes("correction") || s.includes("additional info") || s.includes("awaiting information")) return "review";
@@ -2439,8 +2632,12 @@ function getStatus(p) {
 
 // A permit whose expiry has passed without completion. Distinct from status "expired":
 // these are permits SDCI still lists as Issued, so the app shows them as active
-// construction when the authorization underneath has actually lapsed — 28 of them, one
-// issued in 2016. Seattle only; Bellevue's feed carries no expiry date.
+// construction when the authorization underneath has actually lapsed. Seattle only;
+// Bellevue's feed carries no expiry date.
+// The count here is volatile and worth not hardcoding a belief about: it was 28 when this
+// shipped, 0 for three weeks while SDCI had the column nulled, and 731 once they restored
+// it on 2026-09-07. Occupancy certificates now suppress the badge on buildings that were
+// finished anyway, which is what keeps that number meaning "lapsed", not "old".
 // SDCI dates are zoneless ("2007-02-28T00:00:00.000"), which Date.parse reads as LOCAL time,
 // while seattleTodayMs() builds a UTC instant — so the two sides were never in the same frame
 // despite the comparison assuming they were. East of UTC that flagged permits as lapsed a day
@@ -2451,7 +2648,9 @@ function permitDateMs(v) {
 }
 
 function permitLapsed(p) {
-  if (p._city === "bellevue" || !p.expiresdate || p.completeddate) return null;
+  // hasCofO first: a "permit lapsed" badge on a building the city has certified as
+  // occupiable is simply wrong, whatever the expiry date says.
+  if (p._city === "bellevue" || !p.expiresdate || p.completeddate || hasCofO(p)) return null;
   const t = permitDateMs(p.expiresdate);
   if (!Number.isFinite(t) || t >= seattleTodayMs()) return null;
   // Two permits citywide carry an expiry that predates their own issue date — 800
@@ -2468,10 +2667,12 @@ function permitLapsed(p) {
 // "Stalled" is the union of both cases: issued, past expiry, never completed. It reads
 // across the status buckets on purpose — a stalled project can sit in either "expired"
 // or a stale "issued", and the question "what got approved and then died?" spans both.
-// Stalled no longer hangs off a single upstream field. It used to require expiresdate, and
-// on 2026-09-01 SDCI nulled that column on all 192,678 rows — the filter went from 28
-// results to "No results" and nothing noticed for three weeks, because the health check had
-// no assertion on it. Three independent signals now, any of which qualifies:
+// Stalled no longer hangs off a single upstream field. It used to require expiresdate; on
+// 2026-09-01 SDCI nulled that column on all 192,678 rows and the filter went from 28 results
+// to "No results", unnoticed for three weeks because the health check had no assertion on it.
+// The column came back on 2026-09-07 (140,338 rows populated) and signal 1 simply started
+// contributing again — which is the case for keeping all three rather than reverting.
+// Three independent signals, any of which qualifies:
 //   1. the lapsed test (expiresdate passed) — still the best signal when the field exists
 //   2. issued 5+ years ago and never completed — a permit that's been live that long with
 //      no finaling has almost certainly stopped
@@ -2479,7 +2680,10 @@ function permitLapsed(p) {
 const STALLED_ISSUED_YEARS = 5;
 const STALLED_REVIEW_YEARS = 2;
 function isStalled(p) {
-  if (p._city === "bellevue" || p.completeddate) return false;
+  // The Certificate of Occupancy guard is stated here rather than left to getStatus (which
+  // already returns "complete" and would fall through) so this reads as the deliberate rule
+  // it is: a finished, occupied building is never stalled, whatever its status field says.
+  if (p._city === "bellevue" || p.completeddate || hasCofO(p)) return false;
   const st = getStatus(p);
   const now = seattleTodayMs();
   if (st === "issued" || st === "expired") {
@@ -2600,10 +2804,11 @@ function lastActivityDate(p) {
 // badge refresh, it collapses "show more" back to the first page, closes any open popup and
 // yanks the map back to the default centre, and doing that mid-interaction is worse than
 // the stall it replaced.
-function applyFilters({ preserveView = false } = {}) {
-  const nbF   = document.getElementById("filter-neighborhood").value;
+// The filtered set in the order the grid shows it. Split out of applyFilters so the CSV
+// export can produce exactly what's on screen instead of re-deriving the ordering and
+// drifting from it.
+function getSortedList() {
   const sortF = document.getElementById("sort-by").value;
-
   let list = getFilteredList();
 
   // The date sorts are decorate-sort-undecorate rather than a comparator that parses
@@ -2627,6 +2832,12 @@ function applyFilters({ preserveView = false } = {}) {
   } else {
     list.sort((a, b) => (parseFloat(b.estprojectcost) || 0) - (parseFloat(a.estprojectcost) || 0));
   }
+  return list;
+}
+
+function applyFilters({ preserveView = false, remap = false } = {}) {
+  const nbF  = document.getElementById("filter-neighborhood").value;
+  const list = getSortedList();
 
   if (!preserveView) gridLimit = GRID_PAGE;
   updateStats(list);
@@ -2639,7 +2850,12 @@ function applyFilters({ preserveView = false } = {}) {
   // passes preserveView for a filter that DOES change what's on the map, this skips a redraw
   // it needs — there were only these two call sites when this was written, both street
   // activity, so that trade was made deliberately rather than by accident.
-  if (currentView === "map" && !preserveView) renderMap(list);
+  //
+  // `remap` is that future caller arriving. The Certificate of Occupancy join re-answers
+  // getStatus for 1,897 permits, and cluster rings are coloured by status, so its repaint
+  // does need the markers rebuilt — while still wanting everything else preserveView buys
+  // (no paging reset, no recentering the map out from under someone mid-pan).
+  if (currentView === "map" && (!preserveView || remap)) renderMap(list);
 
   const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
   const title = nbF ? `${nbF} · Developments` : `${cityLabel} · Large Developments`;
@@ -2937,12 +3153,20 @@ function timelineHTML(p) {
     { label: "Issued",          date: p.issueddate },
     { label: "Completed",       date: p.finaleddate || p.completeddate },
   ];
-  return `<div class="timeline">` + steps.map(s =>
-    `<div class="t-step${s.date ? " done" : ""}">
+  // The occupancy step is Seattle-only: Bellevue's feed carries no certificate, so the step
+  // could never complete and would read as a permanently unfinished building on every
+  // Bellevue permit. 120 certificates have no date on them — those still count as done,
+  // which is why done-ness is tracked separately from the date rather than inferred from it.
+  const cofo = cofoFor(p);
+  if (p._city !== "bellevue") steps.push({ label: "Occupied", date: cofo?.date || "", done: !!cofo });
+  return `<div class="timeline">` + steps.map(s => {
+    const done = s.done ?? !!s.date;
+    return `<div class="t-step${done ? " done" : ""}">
       <div class="t-dot"></div>
       <div class="t-label">${s.label}</div>
-      <div class="t-date">${s.date ? fmtDate(s.date) : "—"}</div>
-    </div>`).join("") + `</div>`;
+      <div class="t-date">${s.date ? fmtDate(s.date) : (done ? "on file" : "—")}</div>
+    </div>`;
+  }).join("") + `</div>`;
 }
 
 function openModal(pn) {
@@ -2986,6 +3210,7 @@ function openModal(pn) {
       ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
     </div>
     ${timelineHTML(p)}
+    ${cofoStatusHTML(p)}
     ${reviewStatsHTML(p)}
     ${luStatusHTML(p)}
     <div class="modal-desc">${esc(p.description || "No description provided.")}</div>
@@ -3993,6 +4218,68 @@ function fmtMonthLabel(y, m) {
   return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "short", year: "2-digit" });
 }
 
+// ── Builders ─────────────────────────────────────────────────────────────────
+// contractorcompanyname has been in the payload all along and read by nothing. It is worth
+// showing, but only for a fixed historical window, because SDCI effectively stopped
+// populating it: coverage of the app's slice runs 39% in 2015, 30% in 2020, then falls off a
+// cliff — 5% in 2021, 5% in 2023, 2% in 2026. A live "Builder" filter over that would be
+// worse than no filter, because an unnamed permit is not a permit with no builder, and the
+// ranking would silently be a ranking of who happens to still get recorded. Fixed to the era
+// where the field means something, and labelled as history rather than as current activity.
+const BUILDER_ERA = [2015, 2020];
+
+// The same company is entered several different ways — "EXXEL PACIFIC INC", "EXXEL PACIFIC"
+// and "Exxel Pacific Inc" are three rows carrying 880, 820 and 474 homes. Ranked raw, the
+// city's biggest homebuilder of the era places 3rd, 4th and 10th. Fold case, punctuation and
+// legal-entity suffixes together so those merge into one 2,174-home row.
+//
+// Deliberately conservative: only entity suffixes and corporate boilerplate come off, never a
+// distinguishing word. That leaves "JTM" and "JTM Construction" as separate rows, which is
+// the right failure — over-merging would silently fuse genuinely different companies, and
+// there is no way for a reader to notice that it happened.
+const BUILDER_NOISE = /\b(INC|LLC|L L C|LLP|LP|LTD|CORP|CORPORATION|COMPANY|CO|II|III|IV|SRVC|SERVICES?|USA|WA|NW|GROUP|BUILDERS?|CONSTR|CONSTRUCTION)\b/g;
+
+function builderKey(name) {
+  const flat = name.toUpperCase().replace(/&/g, " AND ").replace(/[^A-Z0-9 ]/g, " ");
+  return flat.replace(BUILDER_NOISE, " ").replace(/\s+/g, " ").trim();
+}
+
+// Title case, so a chart axis doesn't shout "WALSH CONSTRUCTION CO" at the reader — but not
+// blindly, because that turns JTM into "Jtm" and LLC into "Llc". A short all-caps token is an
+// initialism, not a word, so it keeps its case. The cutoff is 3: at 4, "CITY INVESTORS" comes
+// back as "CITY Investors".
+function builderLabel(name) {
+  return name.split(/\s+/).map(w => {
+    const letters = w.replace(/[^A-Za-z]/g, "");
+    if (letters && letters.length <= 3 && letters === letters.toUpperCase()) return w.toUpperCase();
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(" ");
+}
+
+function mergeBuilders(rows) {
+  if (!rows) return null;
+  const agg = new Map();
+  for (const r of rows) {
+    const raw = String(r.name || "").trim();
+    // "BLANKET: 625 BOREN AVE N" is a permit label, not a builder.
+    if (!raw || /^blanket\b/i.test(raw)) continue;
+    const k = builderKey(raw);
+    if (!k) continue;
+    let a = agg.get(k);
+    if (!a) { a = { name: raw, n: 0, units: 0, value: 0 }; agg.set(k, a); }
+    // Shortest spelling wins as the display name: "JTM" over "JTM Construction Inc".
+    if (raw.length < a.name.length) a.name = raw;
+    a.n     += +r.n || 0;
+    a.units += +(r.units || 0);
+    a.value += +(r.value || 0);
+  }
+  return [...agg.values()]
+    .map(a => ({ ...a, name: builderLabel(a.name), units: Math.round(a.units) }))
+    .filter(a => a.units > 0)
+    .sort((a, b) => b.units - a.units)
+    .slice(0, 12);
+}
+
 async function fetchSeattleAnalytics(largeOnly) {
   const now       = new Date();
   const y         = now.getFullYear();
@@ -4029,7 +4316,7 @@ async function fetchSeattleAnalytics(largeOnly) {
   const dupWhere = `housingunitsadded > 0 AND applieddate >= '${startYear}-01-01' AND applieddate <= '${today}'${scope}`;
 
   const [yearly, ytd, ytdPrior, review, monthly, pipe, outTotals, outAbandoned, adu, nbhdRows, cpuYearly,
-         dupByYear, dupPriorYtd] = await Promise.all([
+         dupByYear, dupPriorYtd, builderRows] = await Promise.all([
     soqlFetch({ "$select": "date_extract_y(applieddate) AS year, " + ytdSelect + ", sum(housingunitsremoved) AS removed",
                 "$group": "year", "$order": "year",
                 "$where": `applieddate >= '${startYear}-01-01'${scope}` }),
@@ -4083,6 +4370,22 @@ async function fetchSeattleAnalytics(largeOnly) {
                 "$having": "count(*) > 1",
                 "$where": `housingunitsadded > 0 AND applieddate between '${y-1}-01-01' and '${priorToday}'${scope}`,
                 "$limit": "20000" })
+      .catch(() => null),
+    // Who actually built the homes. Deliberately fixed to BUILDER_ERA rather than following
+    // the 10-year window the other charts use — see the note on that constant. Ordered by
+    // the aggregate expression, not the alias: `$order=units DESC` sorts nulls first and
+    // returned twelve rows of zero. Excluding demolition records is what keeps a project's
+    // unit count from being counted twice, the same double-count dupSelect corrects above.
+    // 400 rows so the client-side name merge has the full tail to work with before it takes
+    // a top 12 — the raw #1 and #3 rows are the same company spelled two ways.
+    soqlFetch({ "$select": "contractorcompanyname AS name, count(*) AS n, " +
+                           "sum(housingunitsadded) AS units, sum(estprojectcost) AS value",
+                "$group": "contractorcompanyname",
+                "$order": "sum(housingunitsadded) DESC",
+                "$limit": "400",
+                "$where": `contractorcompanyname IS NOT NULL AND housingunitsadded > 0 ` +
+                          `AND permittypemapped <> 'Demolition' ` +
+                          `AND applieddate between '${BUILDER_ERA[0]}-01-01' and '${BUILDER_ERA[1]}-12-31'${scope}` })
       .catch(() => null),
   ]);
 
@@ -4162,6 +4465,7 @@ async function fetchSeattleAnalytics(largeOnly) {
       ? adu.map(r => ({ year: +r.year, n: +r.n })).filter(r => r.year >= startYear && r.year <= y)
       : null,
     nbhd,
+    builders: mergeBuilders(builderRows),
     // Same de-duplication as the yearly series — cost per unit divides by this, so leaving
     // it inflated would understate what a home actually costs to build.
     cpuYearly: cpuYearly
@@ -4420,6 +4724,13 @@ function renderAnalytics(d) {
   document.getElementById("card-nbhd").style.display = hasNbhd ? "" : "none";
   if (hasNbhd) makeChart("chart-nbhd", "bar", d.nbhd.map(r => r.name), d.nbhd.map(r => r.units), { horizontal: true });
 
+  // Seattle only: Bellevue's feed carries no contractor field at all, so the key is absent
+  // rather than empty and the card hides itself.
+  const hasBuilders = d.builders && d.builders.length;
+  document.getElementById("card-builders").style.display = hasBuilders ? "" : "none";
+  if (hasBuilders) makeChart("chart-builders", "bar", d.builders.map(r => r.name), d.builders.map(r => r.units),
+                             { horizontal: true, color: "#a78bfa" });
+
   makeChart("chart-monthly", "line", d.monthly.map(r => r.label), d.monthly.map(r => r.permits), { fill: true });
 
   // Market charts: both cities overlaid; static data, independent of city/scope
@@ -4579,11 +4890,10 @@ function restoreFilterState(urlParams, stored) {
   const so = pick("sort");   if (so && [...$("sort-by").options].some(o => o.value === so))       { $("sort-by").value = so;      any = true; }
   const q  = pick("search"); if (q) { $("search").value = q; any = true; }
   const flag = k => { const v = pick(k); return v === "1" || v === true; };
-  if (flag("watched")) { watchedOnly = true;    $("btn-watched")?.classList.add("active");    any = true; }
-  if (flag("street"))  { streetWorkOnly = true; $("btn-streetwork")?.classList.add("active"); any = true; }
-  if (flag("stalled")) { stalledOnly = true;    $("btn-stalled")?.classList.add("active");    any = true; }
-  if (flag("dormant")) { dormantOnly = true;    $("btn-dormant")?.classList.add("active");    any = true; }
-  if (flag("changed")) { changedOnly = true;    $("btn-changed")?.classList.add("active");    any = true; }
+  // Set the booleans, then push them into the dropdown in one pass. The per-key URL names
+  // are unchanged, so links shared before the toolbar was consolidated still restore.
+  for (const [k, , set] of FLAGS) if (flag(k)) { set(true); any = true; }
+  syncFlagUI();
   if (pick("group") === "site" || pick("group") === true) { groupBySite = true; $("btn-group")?.classList.add("active"); any = true; }
   const rc = parseInt(pick("recent"), 10);
   if (rc > 0) { recentMode = true; recentCount = rc; any = true; }
@@ -4647,7 +4957,10 @@ function setView(v) {
 const multiSelects = {};   // groupId -> { get(): string[], close() }
 const msCloseFns = [];
 
-function initMultiSelect(groupId, allLabel) {
+// onChange lets a group do something with the selection before the re-filter — the Flags
+// group uses it to write the checkbox state back into the five booleans the filter and the
+// URL are built from.
+function initMultiSelect(groupId, allLabel, onChange) {
   const group = document.getElementById(groupId);
   const trigger = group.querySelector(".ms-trigger");
   const text = trigger.querySelector(".ms-text");
@@ -4666,7 +4979,7 @@ function initMultiSelect(groupId, allLabel) {
   function open() { msCloseFns.forEach(fn => fn()); panel.hidden = false; }
 
   trigger.addEventListener("click", e => { e.stopPropagation(); panel.hidden ? open() : close(); });
-  checks.forEach(c => c.addEventListener("change", () => { updateLabel(); applyFilters(); }));
+  checks.forEach(c => c.addEventListener("change", () => { updateLabel(); onChange?.(selected()); applyFilters(); }));
   document.addEventListener("click", e => { if (!group.contains(e.target)) close(); });
   document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
 
@@ -4683,6 +4996,10 @@ function initMultiSelect(groupId, allLabel) {
 }
 initMultiSelect("ms-status", "All");
 initMultiSelect("ms-use", "All");
+initMultiSelect("ms-flags", "None", vals => {
+  const on = new Set(vals);
+  FLAGS.forEach(([k, , set]) => set(on.has(k)));
+});
 
 function getFilteredList() {
   const nbF     = document.getElementById("filter-neighborhood").value;
@@ -4713,6 +5030,70 @@ function getFilteredList() {
     }
     return true;
   });
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+// Exports exactly what the filters currently select — the whole matching set, not just the
+// cards paged in — and honours the by-site grouping, so the file matches the numbers on
+// screen rather than quietly disagreeing with them.
+//
+// Two things this has to get right because the output lands in a spreadsheet:
+//  - Formula injection. A description starting "=" or "+" is executed by Excel and Sheets on
+//    open. Permit descriptions are free text typed by applicants, so this is a real path from
+//    the city's data into someone's machine. Prefixing with an apostrophe is the standard
+//    neutralisation and survives the round trip as text.
+//  - A UTF-8 BOM. Without it Excel on Windows reads the file as the local codepage and
+//    mangles every non-ASCII character in an address.
+function csvCell(v) {
+  let s = v === null || v === undefined ? "" : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+function exportCSV() {
+  const sorted = getSortedList();
+  const rows = groupBySite ? groupSites(sorted) : sorted;
+  const header = ["Permit", "Address", "City", "Neighborhood", "Status", "Status (raw)",
+                  "Permit type", "Building use", "Units", "Est. value",
+                  "Applied", "Issued", "Completed", "Occupied (CofO)", "Occupancy type",
+                  "Permits at site", "Description", "Portal URL"];
+  const body = rows.map(p => {
+    const cofo = cofoFor(p);
+    const cityStr = p._city === "bellevue" ? "Bellevue" : "Seattle";
+    const url = safeUrl(p.link?.url) || (p._city === "bellevue"
+      ? `https://permitsearch.mybuildingpermit.com/PermitDetails/${encodeURIComponent(p.permitnum || "")}/BELLEVUE`
+      : `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.permitnum || "")}`);
+    return [
+      p.permitnum || "", p.originaladdress1 || "", cityStr,
+      neighborhoodOf(parseFloat(p.latitude), parseFloat(p.longitude)) || "",
+      statusLabel(getStatus(p)), p.statuscurrent || "",
+      getPermitTypeLabel(p).label, useLabel(getBuildingUse(p)),
+      extractUnits(p) || "", parseFloat(p.estprojectcost) || "",
+      (p.applieddate || "").slice(0, 10), (p.issueddate || "").slice(0, 10),
+      (p.finaleddate || p.completeddate || "").slice(0, 10),
+      cofo ? (cofo.date || "on file") : "", cofo ? cofo.type : "",
+      groupBySite ? (p._siteN || 1) : "",
+      p.description || "", url,
+    ].map(csvCell).join(",");
+  });
+  const csv = "﻿" + [header.map(csvCell).join(","), ...body].join("\r\n");
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  const nb = document.getElementById("filter-neighborhood")?.value;
+  const name = `permits-${(nb || (currentCity === "bellevue" ? "bellevue" : "seattle"))
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${stamp}.csv`;
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href; a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on a later tick: Safari has historically cancelled an in-flight download if the
+  // object URL is released in the same task as the click.
+  setTimeout(() => URL.revokeObjectURL(href), 10000);
+  return rows.length;
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -4827,19 +5208,8 @@ async function init() {
     ]);
     computeWatchChanges();
     applyFilters();
-    // Land-use status rides in after the grid is up. Needs allPermits for the id list, so it
-    // can't start alongside the permit fetch the way street activity does; it starts here.
-    if (currentCity !== "bellevue") {
-      const luGen = dataGeneration;
-      const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
-      fetchLandUse(mups)
-        .then(idx => {
-          if (luGen !== dataGeneration) return;
-          LU_INDEX = idx;
-          applyFilters({ preserveView: true });
-        })
-        .catch(e => console.warn("Land use fetch failed", e));
-    }
+    // Land-use status and occupancy certificates ride in after the grid is up.
+    startBackgroundJoins();
     // ?permit=NNN — a one-shot deep link to a single project. Opens its modal, and if the
     // map is the requested view, lands on its pin as well. The RSS feed and weekly digest
     // now link here instead of to the city portal, so readers arrive in the app that has
@@ -4970,19 +5340,8 @@ document.getElementById("filter-city").addEventListener("change", async function
     allPermits = loaded;
     computeWatchChanges();
     applyFilters();
-    // Land-use status rides in after the grid is up. Needs allPermits for the id list, so it
-    // can't start alongside the permit fetch the way street activity does; it starts here.
-    if (currentCity !== "bellevue") {
-      const luGen = dataGeneration;
-      const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
-      fetchLandUse(mups)
-        .then(idx => {
-          if (luGen !== dataGeneration) return;
-          LU_INDEX = idx;
-          applyFilters({ preserveView: true });
-        })
-        .catch(e => console.warn("Land use fetch failed", e));
-    }
+    // Land-use status and occupancy certificates ride in after the grid is up.
+    startBackgroundJoins();
     document.getElementById("last-updated").textContent =
       `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
   } catch (err) {
@@ -5004,15 +5363,50 @@ document.getElementById("filter-city").addEventListener("change", async function
 
 // Toolbar buttons — wired here rather than via onclick= so no executable markup ships
 // in the HTML (see the CSP note at the top of the file).
-document.getElementById("btn-watched").addEventListener("click", toggleWatchedFilter);
-document.getElementById("btn-streetwork").addEventListener("click", toggleStreetWorkFilter);
-document.getElementById("btn-stalled").addEventListener("click", toggleStalledFilter);
-document.getElementById("btn-dormant").addEventListener("click", toggleDormantFilter);
-document.getElementById("btn-changed").addEventListener("click", toggleChangedFilter);
 document.getElementById("btn-group").addEventListener("click", () => {
   groupBySite = !groupBySite;
   document.getElementById("btn-group").classList.toggle("active", groupBySite);
   applyFilters();   // a full re-render on purpose: the list's shape changes, paging restarts
+});
+
+// ── Overflow menu ──
+// Closes on outside click and on Escape, same contract as the multi-selects. Registered
+// through msCloseFns as well so opening a filter dropdown closes this and vice versa —
+// two panels open at once over the same corner of the toolbar reads as a glitch.
+(() => {
+  const group = document.getElementById("more-menu");
+  const trigger = document.getElementById("btn-more");
+  const panel = group.querySelector(".menu-panel");
+  const close = () => { panel.hidden = true; trigger.setAttribute("aria-expanded", "false"); };
+  trigger.addEventListener("click", e => {
+    e.stopPropagation();
+    if (!panel.hidden) return close();
+    msCloseFns.forEach(fn => fn());
+    panel.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+  });
+  document.addEventListener("click", e => { if (!group.contains(e.target)) close(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
+  msCloseFns.push(close);
+  // Every item in here is a one-shot action, so the menu always closes behind it. Copy link
+  // is the exception: it rewrites its own label to confirm, which you can't read once the
+  // panel is gone.
+  panel.addEventListener("click", e => {
+    if (e.target.id !== "btn-copylink" && e.target.closest("button")) close();
+  });
+})();
+
+// Export: writes what the filters currently select, not just the cards paged into view.
+document.getElementById("btn-export").addEventListener("click", function () {
+  const btn = this, original = btn.textContent;
+  try {
+    const n = exportCSV();
+    btn.textContent = `✓ ${n.toLocaleString()} row${n === 1 ? "" : "s"}`;
+  } catch (err) {
+    console.warn("CSV export failed", err);
+    btn.textContent = "✕ Export failed";
+  }
+  setTimeout(() => { btn.textContent = original; }, 1800);
 });
 
 // Copy link: the URL already describes the full view (syncState keeps it current), so this

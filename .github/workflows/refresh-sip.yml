@@ -129,7 +129,15 @@ jobs:
       - name: Check page size budget
         if: always()
         run: |
-          SOFT=102400   # 100 KB gzipped — warn
+          # Raised from 100 KB on 2026-09-07. The 2026-09-07 review flagged the page sitting
+          # at 95.6% of the old soft budget with about one feature of headroom left, and put
+          # the choice as "raise it or start trimming". Trimming was the wrong answer: the
+          # embedded constants are only ~12% of the file and the neighbourhood coordinates
+          # are already at 4dp, so a serious reduction would have to come out of the app
+          # itself. The occupancy join, CSV export, builder chart and toolbar rewrite landed
+          # in the same pass and took it to ~106 KB. 120 KB restores a real warning margin;
+          # the 150 KB hard ceiling is untouched and still catches genuine bloat.
+          SOFT=122880   # 120 KB gzipped — warn
           HARD=153600   # 150 KB gzipped — fail
           SIZE=$(gzip -c index.html | wc -c)
           RAW=$(wc -c < index.html)
