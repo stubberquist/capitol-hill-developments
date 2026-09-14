@@ -247,6 +247,14 @@ const data = interactive ? await evaluate(`({
   dormant: typeof isDormant==="function" ? allPermits.filter(isDormant).length : 0,
   cofo: typeof hasCofO==="function" ? allPermits.filter(hasCofO).length : 0,
   cards: document.querySelectorAll(".card").length,
+  // "Changed since your last visit" on a FRESH profile. This check always runs against a
+  // throwaway user-data-dir, so there is no previous visit and the only correct answer is
+  // zero. It is asserted because the honest answer being zero is exactly what made the
+  // 2026-09-14 bug invisible: starring a project rewrote the stored status baseline with
+  // certificate-aware statuses that the next load's pre-join comparison read as changes,
+  // and 124 permits reported as changed with no error anywhere. A non-zero value here means
+  // something is persisting or comparing statuses across a phase boundary again.
+  changedSinceVisit: typeof watchChanges!=="undefined" ? Object.keys(watchChanges).length : 0,
   sipFetched: typeof SIP_FETCHED!=="undefined" ? SIP_FETCHED : null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,
 })`).catch(() => null) : null;
@@ -298,6 +306,9 @@ if (data) {
   for (const [k, min] of Object.entries(EXPECT))
     if ((data[k] ?? 0) < min) problems.push(`${k} = ${data[k]} (expected >= ${min})`);
   if (data.duplicatePermitNums > 0) problems.push(`${data.duplicatePermitNums} duplicate permit numbers`);
+  // Not an EXPECT key: those are floors ("at least N"), and this is a ceiling of zero.
+  if (data.changedSinceVisit > 0)
+    problems.push(`${data.changedSinceVisit} permits report as "changed since last visit" on a profile that has never visited before — the status baseline is being written and compared at different points in the load`);
 }
 if (analyticsState?.unavailable) problems.push("analytics reports Chart.js unavailable");
 

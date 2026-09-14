@@ -1403,14 +1403,14 @@
   <div class="modal" id="modal-body"></div>
 </div>
 
-<!-- All three are `defer`red. As blocking scripts they had to download AND parse before the
+<!-- Both are `defer`red. As blocking scripts they had to download AND parse before the
      app script could run, so the first permit request could not leave the browser until
-     they had landed: measured 1,192-1,197ms on Slow 4G, ~170ms unthrottled. None of them is
+     they had landed: measured 1,192-1,197ms on Slow 4G, ~170ms unthrottled. Neither is
      needed by the default grid view. Deferred scripts still execute in order and before
-     DOMContentLoaded, which is the signal `whenLibsReady` waits on. -->
+     DOMContentLoaded, which is the signal `whenLibsReady` waits on.
+     Chart.js used to be a third tag here and is now loaded on demand — see loadChartJs(). -->
 <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <script defer src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js" integrity="sha256-Hk4dIpcqOSb0hZjgyvFOP+cEmDXUKKNE/tT542ZbNQg=" crossorigin="anonymous"></script>
-<script defer src="https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js" integrity="sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=" crossorigin="anonymous"></script>
 <script>
 // ── Config ──────────────────────────────────────────────────────────────────
 const API = "https://data.seattle.gov/resource/76t5-zqzr.json";
@@ -1449,12 +1449,12 @@ function safeUrl(u) {
 const MIN_VALUE = 1_000_000;
 
 // ── Deferred library readiness ───────────────────────────────────────────────
-// Leaflet, markercluster and Chart.js are deferred so they stop delaying the permit
-// fetch. This script is inline and therefore runs BEFORE them, so anything touching
-// `L` or `Chart` has to wait. Deferred scripts are guaranteed to execute before
-// DOMContentLoaded, so that event is the readiness signal. `libsSettled` distinguishes
-// "not loaded yet" from "failed to load" — without it, the analytics view would show its
-// load-failure message to anyone who opened it during the first few hundred ms.
+// Leaflet and markercluster are deferred so they stop delaying the permit fetch. This
+// script is inline and therefore runs BEFORE them, so anything touching `L` has to wait.
+// Deferred scripts are guaranteed to execute before DOMContentLoaded, so that event is the
+// readiness signal. `libsSettled` distinguishes "not loaded yet" from "failed to load".
+// Chart.js is deliberately NOT part of this gate any more — it loads on first use instead,
+// so "the deferred bundle has landed" and "charts are available" are separate questions.
 let libsSettled = document.readyState !== "loading";
 const libsReadyPromise = libsSettled
   ? Promise.resolve()
@@ -1462,6 +1462,46 @@ const libsReadyPromise = libsSettled
       () => { libsSettled = true; resolve(); }, { once: true }));
 function whenLibsReady(fn) {
   if (libsSettled) fn(); else libsReadyPromise.then(fn);
+}
+
+// ── Chart.js, on demand ──────────────────────────────────────────────────────
+// Not loaded with the page. It is 68 KB of the 1,466 KB that has to land before the first
+// card renders (4.6%), and the only thing that uses it is the Analytics view, which is not
+// the default — so most sessions paid for it and never opened a chart. Measured 2026-09-14:
+// the app is bandwidth-bound rather than CPU-bound under throttling, so bytes on the
+// critical path are the whole cost. Deferring this is worth ~0.34s on Fast 3G and ~1.4s on
+// Slow 3G, and nothing at all on desktop.
+// `defer` was not enough: a deferred script still downloads immediately and competes for
+// bandwidth, it just stops blocking the parser.
+const CHART_JS_SRC = "https://unpkg.com/chart.js@4.4.7/dist/chart.umd.js";
+const CHART_JS_SRI = "sha256-KBLLiCX9xXRp6y97sFXpQpJE5ZmSBRHuR36ChJm2Mss=";
+let chartJsPromise = null;
+
+// Resolves true once Chart is usable, false if it could not be loaded. Memoised so the
+// analytics tab can be opened repeatedly without re-injecting the tag — but the memo is
+// cleared on failure, so a load that failed on a flaky connection is retried next time
+// rather than leaving the panel permanently stuck on its error message.
+function loadChartJs() {
+  if (window.Chart) return Promise.resolve(true);
+  if (chartJsPromise) return chartJsPromise;
+  chartJsPromise = new Promise(resolve => {
+    const s = document.createElement("script");
+    s.src = CHART_JS_SRC;
+    s.integrity = CHART_JS_SRI;       // same SRI the static tag carried
+    s.crossOrigin = "anonymous";      // required for integrity to be checked at all
+    s.onload = () => {
+      if (window.Chart) {
+        // The defaults the DOMContentLoaded hook used to apply, now applied at the only
+        // moment they can matter.
+        Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+        applyTheme(currentTheme);   // sets Chart.defaults.color/borderColor from the palette
+      }
+      resolve(!!window.Chart);
+    };
+    s.onerror = () => { chartJsPromise = null; resolve(false); };
+    document.head.appendChild(s);
+  });
+  return chartJsPromise;
 }
 
 // Seattle neighborhoods — City Clerk's Neighborhood Map Atlas sub-areas (S_HOOD),
@@ -1634,7 +1674,18 @@ function toggleWatch(pn) {
   }
   saveJSON("chd-watchlist", [...watchlist]);
   rebuildWatchedSites();
-  snapshotWatchStatuses();
+  // Deliberately does NOT snapshot statuses. It used to, and that was the whole cause of a
+  // bug where starring anything made 124 permits falsely report as "changed since your last
+  // visit" on the next load. getStatus() stopped being a pure function of the permit row
+  // when the occupancy join landed — it reads COFO_INDEX, which populates a second or two
+  // after the grid. computeWatchChanges() compares and snapshots BEFORE that join; this ran
+  // AFTER it, so it rewrote the baseline for all ~11k permits with certificate-aware
+  // statuses that the next visit's pre-join comparison then read as changes.
+  // The call was redundant regardless: computeWatchChanges snapshots EVERY permit, not just
+  // watched ones, so every row already has a baseline — and starring a project changes no
+  // permit's status, so there was never anything here to capture.
+  // If you add another caller that persists a getStatus() result across a page load, it will
+  // hit this same trap: snapshot and compare must observe the same phase.
   // preserveView: starring a card on page 3 shouldn't throw you back to page 1, and starring
   // from a map popup shouldn't rebuild the markers underneath it and close the popup.
   applyFilters({ preserveView: true });
@@ -2179,6 +2230,40 @@ function startBackgroundJoins() {
   fetchCofO()
     .then(idx => { if (gen !== dataGeneration) return; COFO_INDEX = idx; settle(true); })
     .catch(e => console.warn("Certificate of Occupancy fetch failed", e));
+}
+
+// The MHA-zoning and pending-rezone polygon layers. Started only AFTER the permit fetch has
+// resolved, and repainted when they land.
+//
+// They used to sit inside the same `await Promise.all` as the permits, on the reasoning that
+// "at 313ms and 486ms they cost nothing next to the permit fetch". That is true on a desktop
+// and false on a phone. The first throttled measurement of this app (2026-09-14) showed it
+// is bandwidth-bound, not CPU-bound — 4x CPU alone moves time-to-first-card not at all — and
+// these two are ~103 KB competing for the same pipe as the 1,118 KB of permit pages.
+//
+// The "after" matters, and it was worth measuring to find out: simply removing the `await`
+// while still KICKING THEM OFF at the same moment bought almost nothing (-63 KB, -323ms of a
+// predicted -171 KB), because they never finished later than the permits — they just made
+// the permits finish slower by sharing the pipe. Un-awaiting is not deferring. Only starting
+// them after the permits are in hand actually gives the permit pages the whole connection.
+//
+// Safe to land late: mhaApplies() and rezoneFor() both bail on an empty layer BEFORE
+// touching their memo caches, so a render during loading caches nothing and the repaint
+// fills the badges in correctly. That ordering is load-bearing — a cache write on the empty
+// path would pin every permit to "no badge" for the session. The visible cost is the MHA and
+// rezone badges appearing a beat after the first cards, the same trade already made for
+// street activity and for both background joins.
+function startLayerFetches() {
+  if (currentCity === "bellevue") return;   // MHA and the rezone are Seattle programs
+  const gen = dataGeneration;
+  const settle = () => {
+    if (gen !== dataGeneration) return;
+    if (allPermits && allPermits.length) applyFilters({ preserveView: true });
+  };
+  // Both already swallow their own errors and fall back to an empty layer, so a rejection
+  // here would be a bug in them rather than something to handle.
+  fetchNonMhaZones().then(settle).catch(() => {});
+  fetchPendingRezones().then(settle).catch(() => {});
 }
 
 let STREET_ACTIVITY = {};
@@ -4202,16 +4287,20 @@ function renderMap(permits) {
 // Server-side aggregates over the FULL datasets (not just the 5k loaded permits).
 let analyticsScope = false;          // false = all permits, true = $1M+ only
 const analyticsCache = new Map();    // `${city}:${scope}` → { ts, promise }
+// KNOWN AND ACCEPTED DIVERGENCE: everything below is a server-side SoQL aggregate over
+// `statuscurrent`, so the charts know nothing about certificates of occupancy. The card
+// grid, map pin and modal all treat a certificate as overriding the permit's own status
+// (see getStatus), which means ~124 permits are counted as expired or abandoned by
+// "Permit Outcomes by Filing Year" while the rest of the app calls them Completed.
+// Left unfixed on purpose: correcting it server-side would mean carrying a 5,195-entry
+// permit-number exclusion into every aggregate query, which costs more than the ~124 rows
+// are worth against citywide totals in the thousands. The charts are explicitly labelled
+// citywide-and-unfiltered, which is the frame in which they are still correct.
 const ANALYTICS_TTL_MS = 30 * 60 * 1000;   // 30 min — permit data updates daily, not hourly
 const anCharts = {};                 // canvas id → Chart instance
 
-// Chart.js is deferred, so it is not defined while this script runs — set its defaults
-// once it has loaded instead.
-whenLibsReady(() => {
-  if (!window.Chart) return;
-  Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-  applyTheme(currentTheme);  // sets Chart.defaults.color/borderColor from the active palette
-});
+// Chart.js defaults are set by loadChartJs()'s onload, because that is now the first moment
+// Chart exists. There is nothing to do here at startup.
 
 function isoDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -4794,12 +4883,16 @@ function renderAnalytics(d) {
 }
 
 async function loadAnalytics() {
+  const statsEl = document.getElementById("an-stats");
+  // Paint the placeholder BEFORE awaiting the library. Chart.js is fetched on first open
+  // now, and on a slow connection that download is seconds of otherwise-blank panel.
   if (!window.Chart) {
-    // Chart.js is deferred, so "not there yet" and "failed" are different states now.
-    // Only the settled case is a real failure; otherwise wait and try again.
-    if (!libsSettled) { whenLibsReady(loadAnalytics); return; }
-    document.getElementById("an-stats").innerHTML =
-      `<div class="an-stat"><div class="label">Charts unavailable</div><div class="vs">Chart.js failed to load — check your connection and refresh.</div></div>`;
+    statsEl.innerHTML =
+      `<div class="an-stat"><div class="label">Loading…</div><div class="vs">Fetching charts</div></div>`;
+  }
+  if (!(await loadChartJs())) {
+    statsEl.innerHTML =
+      `<div class="an-stat"><div class="label">Charts unavailable</div><div class="vs">Chart.js failed to load — check your connection and try again.</div></div>`;
     return;
   }
   const key = `${currentCity}:${analyticsScope}`;
@@ -5225,16 +5318,13 @@ async function init() {
         .catch(() => {});
     }
 
-    [allPermits] = await Promise.all([
-      currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
-      // These two stay awaited. At 313ms and 486ms they cost nothing next to the permit
-      // fetch, and they drive badges that would otherwise visibly pop in a moment later.
-      currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
-      currentCity === "bellevue" ? Promise.resolve() : fetchPendingRezones(),
-    ]);
+    allPermits = currentCity === "bellevue" ? await fetchBellevuePermits() : await fetchPermits();
     computeWatchChanges();
     applyFilters();
-    // Land-use status and occupancy certificates ride in after the grid is up.
+    // Everything that decorates the grid rather than building it starts here, once the
+    // permit pages have had the connection to themselves: zoning and rezone polygons for the
+    // MHA badges, then land-use status and occupancy certificates.
+    startLayerFetches();
     startBackgroundJoins();
     // ?permit=NNN — a one-shot deep link to a single project. Opens its modal, and if the
     // map is the requested view, lands on its pin as well. The RSS feed and weekly digest
@@ -5352,13 +5442,7 @@ document.getElementById("filter-city").addEventListener("change", async function
         .catch(() => {});
     }
 
-    const [loaded] = await Promise.all([
-      currentCity === "bellevue" ? fetchBellevuePermits() : fetchPermits(),
-      // These two stay awaited. At 313ms and 486ms they cost nothing next to the permit
-      // fetch, and they drive badges that would otherwise visibly pop in a moment later.
-      currentCity === "bellevue" ? Promise.resolve() : fetchNonMhaZones(),
-      currentCity === "bellevue" ? Promise.resolve() : fetchPendingRezones(),
-    ]);
+    const loaded = currentCity === "bellevue" ? await fetchBellevuePermits() : await fetchPermits();
     // Superseded by a later city switch while we were waiting — drop this result on the
     // floor. Assigning it would leave the wrong city's rows under the current city's title,
     // dropdown and neighbourhood list.
@@ -5366,7 +5450,8 @@ document.getElementById("filter-city").addEventListener("change", async function
     allPermits = loaded;
     computeWatchChanges();
     applyFilters();
-    // Land-use status and occupancy certificates ride in after the grid is up.
+    // Decoration, once the permit pages have had the connection to themselves.
+    startLayerFetches();
     startBackgroundJoins();
     document.getElementById("last-updated").textContent =
       `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
