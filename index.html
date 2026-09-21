@@ -808,6 +808,19 @@
       grid-column: 1 / -1;
     }
     .visit-banner.is-link { cursor: pointer; }
+    /* Deliberately muted rather than a warning colour: nothing is wrong, the data simply
+       doesn't say when these were filed. It sits above the grid so it is read before the
+       result count is taken as the whole story. */
+    .undated-note {
+      grid-column: 1 / -1;
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      margin-bottom: 12px;
+      cursor: help;
+    }
     .visit-banner.is-link:hover, .visit-banner.is-link:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
     .visit-banner b { color: var(--green); }
 
@@ -1298,6 +1311,16 @@
       <option value="10000000">$10M+</option>
       <option value="25000000">$25M+</option>
       <option value="50000000">$50M+</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label for="filter-filed">Filed</label>
+    <select id="filter-filed">
+      <option value="">Any time</option>
+      <option value="12m">Last 12 months</option>
+      <option value="3y">Last 3 years</option>
+      <option value="2020">Since 2020</option>
     </select>
   </div>
 
@@ -2824,6 +2847,38 @@ function dormantDays(p) {
 }
 function isDormant(p) { return dormantDays(p) > DORMANT_DAYS; }
 
+// ── Filed-date filter ────────────────────────────────────────────────────────
+// The app spans 2003-2026 and only 15% of it was filed in 2024 or later, so without this
+// the default view is dominated by permits from a decade ago and "what is happening now?"
+// could not be asked at all.
+//
+// Cutoffs are computed per call rather than baked at load, so a tab left open overnight
+// doesn't keep filtering against yesterday's window. seattleTodayMs() keeps the boundary in
+// the city's timezone, matching every other date comparison in this file.
+const FILED_RANGES = {
+  "12m":  () => seattleTodayMs() - 365 * 86400000,
+  "3y":   () => seattleTodayMs() - Math.round(3 * 365.25) * 86400000,
+  "2020": () => Date.parse("2020-01-01T00:00:00Z"),
+};
+
+// The filing date, falling back to the issue date. 46 permits in the Seattle slice carry an
+// issue date with no application date; the fallback keeps them filterable instead of
+// dumping them in the undated bucket. Returns NaN when neither exists.
+function filedMs(p) {
+  const a = permitDateMs(p.applieddate);
+  if (Number.isFinite(a)) return a;
+  const i = permitDateMs(p.issueddate);
+  return Number.isFinite(i) ? i : NaN;
+}
+
+// How many permits the active date range hid for having no date at all, rather than for
+// falling outside the window. This is NOT a detail to swallow: 3,622 of 11,018 rows in the
+// Seattle slice carry no applied, issued OR completed date — 33% — and they are real
+// projects (1,931 "Additional Info Requested", 751 "Completed", 376 "Scheduled"). A date
+// filter that silently dropped a third of the dataset would be exactly the class of quiet
+// wrong answer this project keeps getting caught by, so the grid says so instead.
+let dateHiddenCount = 0;
+
 // Days since SDCI marked a permit ready to issue, for permits the applicant still hasn't
 // picked up. Issued permits go ready→issued in a median of 0 days (p90 27), so anything
 // past ~30 here is genuinely unusual. 74 unissued permits carry a readytoissuedate today;
@@ -3067,8 +3122,15 @@ function groupSites(permits) {
 function renderGrid(permits) {
   const grid = document.getElementById("grid-view");
 
+  // The undated note has to survive the empty case too: filtering to "Last 12 months" in a
+  // quiet neighbourhood can hide everything on the date test alone, and a bare "No results"
+  // there would be actively misleading about what the data contains.
+  const undatedNote = dateHiddenCount
+    ? `<div class="undated-note" title="These permits match every other filter, but SDCI has recorded no application, issue or completion date for them, so there is no way to tell whether they fall inside the selected period. They are not lost — switch Filed back to &quot;Any time&quot; to see them.">${dateHiddenCount.toLocaleString()} more match your filters but carry no filing date, so they can't be placed in this period</div>`
+    : "";
+
   if (!permits.length) {
-    grid.innerHTML = `<div class="state-msg"><div class="icon">🏙</div>
+    grid.innerHTML = undatedNote + `<div class="state-msg"><div class="icon">🏙</div>
       <h3>No results</h3><p>Try adjusting your filters.</p></div>`;
     return;
   }
@@ -3091,7 +3153,7 @@ function renderGrid(permits) {
 
   const list = groupBySite ? groupSites(permits) : permits;
   const shown = list.slice(0, gridLimit);
-  grid.innerHTML = banner + shown.map(p => {
+  grid.innerHTML = banner + undatedNote + shown.map(p => {
     const status     = getStatus(p);
     const use        = getBuildingUse(p);
     const value      = fmtValue(p.estprojectcost);
@@ -4934,7 +4996,7 @@ document.getElementById("scope-large").addEventListener("click", () => setScope(
 // the URL (only the non-defaults, so a fresh page stays a bare path) and to localStorage;
 // init reads the URL first, then localStorage. Before this only city/view/scope survived —
 // "Capitol Hill + In Progress + $10M+" produced a bare URL and reset on reload.
-const STATE_KEYS = ["city","view","scope","nb","status","use","type","minval","sort","search",
+const STATE_KEYS = ["city","view","scope","nb","status","use","type","minval","filed","sort","search",
                     "watched","street","stalled","dormant","changed","layers","recent","group"];
 function currentState() {
   const $ = id => document.getElementById(id);
@@ -4951,6 +5013,7 @@ function currentState() {
     use:     multiSelects["ms-use"]?.get() || [],
     type:    $("filter-type")?.value || "",
     minval:  $("filter-minval")?.value || "",
+    filed:   $("filter-filed")?.value || "",
     sort:    $("sort-by")?.value || "",
     search:  $("search")?.value || "",
     watched: watchedOnly, street: streetWorkOnly, stalled: stalledOnly, dormant: dormantOnly,
@@ -4977,6 +5040,7 @@ function syncState() {
     if (s.use.length)         p.set("use", s.use.join(","));
     if (s.type)               p.set("type", s.type);
     if (s.minval && parseFloat(s.minval) !== MIN_VALUE) p.set("minval", s.minval);
+    if (s.filed)              p.set("filed", s.filed);
     if (s.sort && s.sort !== "date_desc") p.set("sort", s.sort);
     if (s.search)             p.set("search", s.search);
     if (s.watched)            p.set("watched", "1");
@@ -5006,6 +5070,7 @@ function restoreFilterState(urlParams, stored) {
   const us = list("use");    if (us) { multiSelects["ms-use"].set(us);    any = true; }
   const ty = pick("type");   if (ty && [...$("filter-type").options].some(o => o.value === ty))   { $("filter-type").value = ty;   any = true; }
   const mv = pick("minval"); if (mv && [...$("filter-minval").options].some(o => o.value === String(mv))) { $("filter-minval").value = String(mv); any = true; }
+  const fd = pick("filed"); if (fd && [...$("filter-filed").options].some(o => o.value === fd)) { $("filter-filed").value = fd; any = true; }
   const so = pick("sort");   if (so && [...$("sort-by").options].some(o => o.value === so))       { $("sort-by").value = so;      any = true; }
   const q  = pick("search"); if (q) { $("search").value = q; any = true; }
   const flag = k => { const v = pick(k); return v === "1" || v === true; };
@@ -5127,7 +5192,10 @@ function getFilteredList() {
   const typeF   = document.getElementById("filter-type").value;
   const minValF = parseFloat(document.getElementById("filter-minval").value) || MIN_VALUE;
   const searchF = document.getElementById("search").value.toLowerCase();
-  return allPermits.filter(p => {
+  const filedF  = document.getElementById("filter-filed").value;
+  const filedFrom = FILED_RANGES[filedF] ? FILED_RANGES[filedF]() : null;
+  let undated = 0;
+  const out = allPermits.filter(p => {
     if (watchedOnly && !isWatched(p)) return false;
     if (streetWorkOnly && !hasStreetWork(p)) return false;
     if (stalledOnly && !isStalled(p)) return false;
@@ -5147,8 +5215,18 @@ function getFilteredList() {
       const hay = [(p.originaladdress1||""), (p.description||""), (p.permitnum||"")].join(" ").toLowerCase();
       if (!hay.includes(searchF)) return false;
     }
+    // Deliberately the LAST test. The undated tally is meant to read "permits you would
+    // otherwise be seeing", so it must only count rows that cleared every other filter —
+    // checking the date earlier would inflate it with permits excluded for other reasons.
+    if (filedFrom !== null) {
+      const t = filedMs(p);
+      if (!Number.isFinite(t)) { undated++; return false; }
+      if (t < filedFrom) return false;
+    }
     return true;
   });
+  dateHiddenCount = undated;
+  return out;
 }
 
 // ── CSV export ────────────────────────────────────────────────────────────────
@@ -5465,7 +5543,7 @@ document.getElementById("filter-city").addEventListener("change", async function
 });
 
 // ── Event listeners ───────────────────────────────────────────────────────────
-["filter-type","filter-minval","sort-by"].forEach(id =>
+["filter-type","filter-minval","filter-filed","sort-by"].forEach(id =>
   // Wrapped rather than passed bare: applyFilters takes an options object now, and a bare
   // reference would hand it the Event. That happens to work (an Event has no preserveView,
   // so it defaults to false) but only by accident, and silently stops working the day
