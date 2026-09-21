@@ -58,6 +58,24 @@ const EXPECT = {
   cofo: 500,
 };
 
+// Floors for the map and analytics probes. These ran for weeks and their results went
+// straight into the JSON output without ever being compared to anything: `mapState` was
+// referenced exactly twice outside its own assignment — at its declaration and in the final
+// print — so a map rendering ZERO markers reported CLEAN. That is the third time this shape
+// has bitten the project (the dead Stalled filter, the watermarked CARTO tiles), and the
+// first where the probe already existed and its answer was simply discarded.
+// Markers sit around 5,900 and charts at 13; these are collapse detectors, not drift alarms.
+const EXPECT_MAP = { markers: 1000, sites: 1000 };
+const EXPECT_ANALYTICS = { charts: 8 };
+
+// How stale the embedded data may get before it counts as a failure. SIP_FETCHED and
+// REZONE_FETCHED are baked in by the Monday workflow and were read off the live page every
+// morning without ever being checked against the clock — so if the schedule stopped firing
+// (GitHub disables workflows after ~60 days of repo inactivity, or a YAML edit breaks the
+// trigger) the embedded index would quietly freeze while this reported CLEAN indefinitely.
+// 10 days gives the weekly refresh a missed run plus slack before it complains.
+const MAX_DATA_AGE_DAYS = 10;
+
 // Everything that needs tearing down, whatever way we exit.
 let chrome = null;
 let profileDir = null;
@@ -302,6 +320,13 @@ try {
 const uniq = a => [...new Set(a)];
 const problems = [];
 if (!interactive) problems.push("page never became interactive (no permits or no cards rendered)");
+// A page that became interactive but whose probe threw is NOT the same as a page that never
+// loaded, and it used to be treated as such: `data` is one large evaluate().catch(() => null),
+// so a single throw inside it skipped every floor, the duplicate check and the
+// changedSinceVisit ceiling in complete silence. Today every field is typeof-guarded and a
+// throw is unlikely — but this file has grown three new probes in three weeks and the next
+// one added without a guard is what makes it live.
+if (interactive && !data) problems.push("the data probe threw — every EXPECT floor is unverified for this run");
 if (data) {
   for (const [k, min] of Object.entries(EXPECT))
     if ((data[k] ?? 0) < min) problems.push(`${k} = ${data[k]} (expected >= ${min})`);
@@ -309,6 +334,30 @@ if (data) {
   // Not an EXPECT key: those are floors ("at least N"), and this is a ceiling of zero.
   if (data.changedSinceVisit > 0)
     problems.push(`${data.changedSinceVisit} permits report as "changed since last visit" on a profile that has never visited before — the status baseline is being written and compared at different points in the load`);
+
+  // Embedded-data staleness. Absent or unparseable dates are a problem in their own right:
+  // the constants are written by the refresh workflow, so a missing one means the bake step
+  // changed shape or stopped running.
+  for (const [k, label] of [["sipFetched", "SIP index"], ["rezoneFetched", "rezone index"]]) {
+    const raw = data[k];
+    const t = raw ? Date.parse(raw) : NaN;
+    if (!Number.isFinite(t)) { problems.push(`${label}: no usable ${k} on the page (got ${JSON.stringify(raw)})`); continue; }
+    const days = Math.floor((Date.now() - t) / 86400000);
+    if (days > MAX_DATA_AGE_DAYS)
+      problems.push(`${label} is ${days} days old (${raw}) — the weekly refresh workflow has probably stopped running`);
+  }
+}
+// The map and analytics probes are separately catch(() => null)'d, so "the probe threw" and
+// "the view is broken" both land here rather than vanishing.
+if (interactive && !mapState) problems.push("map probe returned nothing — the map view could not be measured");
+else if (mapState) {
+  for (const [k, min] of Object.entries(EXPECT_MAP))
+    if ((mapState[k] ?? 0) < min) problems.push(`map ${k} = ${mapState[k]} (expected >= ${min})`);
+}
+if (interactive && !analyticsState) problems.push("analytics probe returned nothing — the analytics view could not be measured");
+else if (analyticsState) {
+  for (const [k, min] of Object.entries(EXPECT_ANALYTICS))
+    if ((analyticsState[k] ?? 0) < min) problems.push(`analytics ${k} = ${analyticsState[k]} (expected >= ${min})`);
 }
 if (analyticsState?.unavailable) problems.push("analytics reports Chart.js unavailable");
 

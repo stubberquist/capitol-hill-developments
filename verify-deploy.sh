@@ -26,7 +26,10 @@ echo "Waiting for $URL to serve the local build (sha256 ${want:0:12}…)"
 deadline=$(( $(date +%s) + TIMEOUT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   # A failed fetch shouldn't kill the loop — Pages can 404 briefly mid-publish
-  got=$(curl -sf "$URL" 2>/dev/null | shasum -a 256 | cut -d' ' -f1) || got=""
+  # --max-time is load-bearing here rather than cosmetic: the polling TIMEOUT below is only
+  # consulted BETWEEN iterations, so without a per-request ceiling one hung curl would hang
+  # past the very timeout this loop implements.
+  got=$(curl -sf --connect-timeout 10 --max-time 30 "$URL" 2>/dev/null | shasum -a 256 | cut -d' ' -f1) || got=""
   if [ "$got" = "$want" ]; then
     echo "OK — live site is serving this build."
     exit 0

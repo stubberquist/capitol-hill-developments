@@ -1837,7 +1837,7 @@ const PERMIT_FIELDS = [
   "originaladdress1", "latitude", "longitude",
   "daysoutcorrections", "numberreviewcycles", "totaldaysplanreview", "daysplanreviewcity",
   "initialreviewcompletedate", "planreviewcompletedate", "readytoissuedate",
-  "relatedmup", "contractorcompanyname",
+  "relatedmup", "contractorcompanyname", "development_site",
 ].join(",");
 
 async function fetchPermits() {
@@ -2878,6 +2878,11 @@ function filedMs(p) {
 // filter that silently dropped a third of the dataset would be exactly the class of quiet
 // wrong answer this project keeps getting caught by, so the grid says so instead.
 let dateHiddenCount = 0;
+// The permits behind that tally. Kept because the note has to be counted the same way the
+// grid is: with "By site" on the cards are addresses, so a raw permit count overstates how
+// many cards you would gain — the 3,622 undated Seattle permits sit on 2,190 addresses, a
+// 39% overstatement.
+let dateHiddenPermits = [];
 
 // Days since SDCI marked a permit ready to issue, for permits the applicant still hasn't
 // picked up. Issued permits go ready→issued in a median of 0 days (p90 27), so anything
@@ -3100,19 +3105,67 @@ let gridLimit = GRID_PAGE;
 // the most-recently-active one the map uses. That keeps the user's chosen sort meaningful
 // ("Highest Value" still puts the biggest project first); picking by activity would quietly
 // re-sort the grid by a rule nobody selected. Site-level facts ride on the representative.
+// SDCI's own project id, which the app ignored for a year. Occasionally a permit carries
+// more than one, comma-separated ("DV0081200, DV0084140"), and each is a real link.
+function devIds(p) {
+  const raw = (p.development_site || "").trim();
+  return raw ? raw.split(",").map(d => d.trim()).filter(Boolean) : [];
+}
+
 function groupSites(permits) {
+  // Union-find over two independent keys: the normalised address, and every development id
+  // the permit carries. Permits reachable through either end up on one card.
+  //
+  // It has to be a UNION rather than a preference, and that is not obvious — I measured the
+  // naive version first. Preferring development_site over the address where one exists
+  // produced MORE cards, not fewer (6,395 against 5,983), because a single development id
+  // can be attached to only some of the permits at a shared address, splitting a group that
+  // address-matching already had right. Unioning keeps both relationships.
+  //
+  // What it buys: 59 developments spanning more than one address — 214 permits, 6,599 homes,
+  // $1.75B — that address-matching structurally cannot see. DV0065844 is 12 permits across
+  // 9 addresses at 1101 NE Campus Pkwy; 583 Battery St is 698 homes across 2. Net card count
+  // only moves ~108 (1.8%), but the merges land almost entirely on the large projects this
+  // app exists to show.
+  const parent = new Map();
+  function find(x) {
+    if (!parent.has(x)) { parent.set(x, x); return x; }
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r);
+    while (parent.get(x) !== r) { const nxt = parent.get(x); parent.set(x, r); x = nxt; }
+    return r;
+  }
+  function union(a, b) {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  }
+
+  for (const p of permits) {
+    const self = `P:${p.permitnum}`;
+    find(self);
+    const addr = normalizeAddr(p);
+    if (addr) union(self, `A:${addr}`);   // no address and no dev id: stays its own card
+    for (const d of devIds(p)) union(self, `D:${d}`);
+  }
+
   const seen = new Map();
   const out = [];
   for (const p of permits) {
-    const k = normalizeAddr(p) || `__${p.permitnum}`;   // no address: stays its own card
+    // The representative is still the FIRST permit of each group in the already-sorted
+    // input, not the most-recently-active one the map uses. That keeps the user's chosen
+    // sort meaningful ("Highest Value" still puts the biggest project first); picking by
+    // activity would quietly re-sort the grid by a rule nobody selected.
+    const k = find(`P:${p.permitnum}`);
     let rep = seen.get(k);
     if (!rep) {
       rep = Object.assign(Object.create(Object.getPrototypeOf(p)), p);   // copy — never mutate allPermits
       rep._siteN = 0; rep._siteMaxVal = 0; rep._siteNew = false; rep._siteChanged = false;
+      rep._siteAddrs = new Set();
       seen.set(k, rep); out.push(rep);
     }
     rep._siteN++;
     rep._siteMaxVal = Math.max(rep._siteMaxVal, parseFloat(p.estprojectcost) || 0);
+    if (normalizeAddr(p)) rep._siteAddrs.add(normalizeAddr(p));
     if (isNewSinceVisit(p)) rep._siteNew = true;
     if (watchChanges[p.permitnum]) rep._siteChanged = true;
   }
@@ -3122,11 +3175,23 @@ function groupSites(permits) {
 function renderGrid(permits) {
   const grid = document.getElementById("grid-view");
 
+  const list = permits.length ? (groupBySite ? groupSites(permits) : permits) : [];
+
   // The undated note has to survive the empty case too: filtering to "Last 12 months" in a
   // quiet neighbourhood can hide everything on the date test alone, and a bare "No results"
   // there would be actively misleading about what the data contains.
-  const undatedNote = dateHiddenCount
-    ? `<div class="undated-note" title="These permits match every other filter, but SDCI has recorded no application, issue or completion date for them, so there is no way to tell whether they fall inside the selected period. They are not lost — switch Filed back to &quot;Any time&quot; to see them.">${dateHiddenCount.toLocaleString()} more match your filters but carry no filing date, so they can't be placed in this period</div>`
+  //
+  // Counted in the units the grid is actually showing. With "By site" on, the hidden permits
+  // are folded into the same grouping and the figure becomes how many EXTRA cards you would
+  // gain — an undated permit sharing an address with a visible one adds no card at all, so
+  // the raw permit count overstated it by 39%.
+  const hiddenCards = !dateHiddenCount ? 0
+    : groupBySite ? groupSites(permits.concat(dateHiddenPermits)).length - list.length
+    : dateHiddenCount;
+  const hiddenNoun = groupBySite ? (hiddenCards === 1 ? "site" : "sites")
+                                 : (hiddenCards === 1 ? "permit" : "permits");
+  const undatedNote = hiddenCards > 0
+    ? `<div class="undated-note" title="These match every other filter, but SDCI has recorded no application, issue or completion date for them, so there is no way to tell whether they fall inside the selected period. They are not lost — switch Filed back to &quot;Any time&quot; to see them.">${hiddenCards.toLocaleString()} more ${hiddenNoun} match your filters but carry no filing date, so they can't be placed in this period</div>`
     : "";
 
   if (!permits.length) {
@@ -3151,7 +3216,6 @@ function renderGrid(permits) {
     banner = `<div class="visit-banner is-link" role="button" tabindex="0" title="Show only these">${bits.join(", ")} since your last visit (${fmtDate(lastVisit)}) · <u>show them</u></div>`;
   }
 
-  const list = groupBySite ? groupSites(permits) : permits;
   const shown = list.slice(0, gridLimit);
   grid.innerHTML = banner + undatedNote + shown.map(p => {
     const status     = getStatus(p);
@@ -5194,7 +5258,7 @@ function getFilteredList() {
   const searchF = document.getElementById("search").value.toLowerCase();
   const filedF  = document.getElementById("filter-filed").value;
   const filedFrom = FILED_RANGES[filedF] ? FILED_RANGES[filedF]() : null;
-  let undated = 0;
+  const undated = [];
   const out = allPermits.filter(p => {
     if (watchedOnly && !isWatched(p)) return false;
     if (streetWorkOnly && !hasStreetWork(p)) return false;
@@ -5220,12 +5284,13 @@ function getFilteredList() {
     // checking the date earlier would inflate it with permits excluded for other reasons.
     if (filedFrom !== null) {
       const t = filedMs(p);
-      if (!Number.isFinite(t)) { undated++; return false; }
+      if (!Number.isFinite(t)) { undated.push(p); return false; }
       if (t < filedFrom) return false;
     }
     return true;
   });
-  dateHiddenCount = undated;
+  dateHiddenPermits = undated;
+  dateHiddenCount = undated.length;
   return out;
 }
 

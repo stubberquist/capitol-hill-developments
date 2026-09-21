@@ -16,19 +16,25 @@ HTML="$SCRIPT_DIR/index.html"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# A stalled socket is not an HTTP error, so -f never sees it. ZHVI gets its own ceiling:
+# the file is ~94 MB (measured 2026-09-21), which downloads in under 2s here but has to
+# survive a slow shared runner, so 120s would be a real risk of failing a healthy fetch.
+CURL_TIMEOUTS="--connect-timeout 15 --max-time 120"
+CURL_TIMEOUTS_BIG="--connect-timeout 15 --max-time 600"
+
 ZORI_URL="https://files.zillowstatic.com/research/public_csvs/zori/City_zori_uc_sfrcondomfr_sm_month.csv"
 ZHVI_URL="https://files.zillowstatic.com/research/public_csvs/zhvi/City_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
 MORTGAGE_URL="https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
 POP_URL="https://fred.stlouisfed.org/graph/fredgraph.csv?id=STWPOP"
 
 echo "Fetching Zillow ZORI (rent index)..."
-curl -sf "$ZORI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zori.csv"
+curl -sf $CURL_TIMEOUTS "$ZORI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zori.csv"
 echo "Fetching Zillow ZHVI (home values, ~90MB streamed)..."
-curl -sf "$ZHVI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zhvi.csv"
+curl -sf $CURL_TIMEOUTS_BIG "$ZHVI_URL" | grep -E '^RegionID|"?(Seattle|Bellevue)"?,city,WA' > "$TMP/zhvi.csv"
 echo "Fetching FRED 30-yr mortgage rate..."
-curl -sf "$MORTGAGE_URL" > "$TMP/mortgage.csv"
+curl -sf $CURL_TIMEOUTS "$MORTGAGE_URL" > "$TMP/mortgage.csv"
 echo "Fetching FRED metro population (STWPOP)..."
-curl -sf "$POP_URL" > "$TMP/pop.csv"
+curl -sf $CURL_TIMEOUTS "$POP_URL" > "$TMP/pop.csv"
 
 DATE=$(date +%Y-%m-%d)
 

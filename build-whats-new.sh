@@ -9,12 +9,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# -f turns an HTTP error STATUS into a failure; it does nothing for a socket that opens and
+# then stalls, which is an ordinary failure mode for Socrata and ArcGIS under load. Without a
+# ceiling such a hang blocks the workflow up to the GitHub Actions job limit (6 hours) instead
+# of failing fast — and since the workflow uses cancel-in-progress: false, it also blocks any
+# manual re-run queued behind it.
+CURL_TIMEOUTS="--connect-timeout 15 --max-time 120"
+
 SINCE=$(date -u -d "7 days ago" +%Y-%m-%d 2>/dev/null || date -u -v-7d +%Y-%m-%d)
 TODAY=$(date -u +%Y-%m-%d)
 TOKEN="8TWYR3dr4BMUJcfxCbdwGw7pv"
 
 echo "Fetching notable Seattle filings since $SINCE..."
-curl -sf -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
+curl -sf $CURL_TIMEOUTS -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
   --data-urlencode "\$select=permitnum,originaladdress1,description,estprojectcost,housingunitsadded,applieddate" \
   --data-urlencode "\$where=applieddate >= '$SINCE' AND (estprojectcost >= 5000000 OR housingunitsadded >= 20)" \
   --data-urlencode "\$order=estprojectcost DESC" \
@@ -22,7 +29,7 @@ curl -sf -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
   --data-urlencode "\$\$app_token=$TOKEN" > "$TMP/seattle.json"
 
 echo "Fetching notable Bellevue filings since $SINCE..."
-curl -sf -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query" \
+curl -sf $CURL_TIMEOUTS -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query" \
   --data-urlencode "where=APPLIEDDATE >= DATE '$SINCE' AND (VALUATION >= 5000000 OR DWELLINGUNITSCREATED >= 20)" \
   --data-urlencode "outFields=PERMITNUMBER,SITEADDRESS,PROJECTDESCRIPTION,VALUATION,DWELLINGUNITSCREATED,APPLIEDDATE" \
   --data-urlencode "orderByFields=VALUATION DESC" \

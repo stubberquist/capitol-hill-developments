@@ -37,7 +37,7 @@ fetch_all() {   # fetch_all <url> <where> <outFields> <extra-args...> > file
   echo "["
   while :; do
     page="$TMP/page.json"
-    curl -sf -G "$url" \
+    curl -sf --connect-timeout 15 --max-time 120 -G "$url" \
       --data-urlencode "where=$where" \
       --data-urlencode "outFields=$fields" \
       --data-urlencode "outSR=4326" \
