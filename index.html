@@ -636,6 +636,12 @@
       cursor: help;
     }
     .lu-status.lu-stuck { color: #fb923c; }
+    /* Trade/electrical heartbeat. Green only for recent paperwork; the quiet state is muted
+       rather than alarming, because it is the absence of evidence, not evidence of a problem. */
+    .lapsed-badge.activity-badge { color: var(--green); border-color: rgba(52,211,153,0.35); background: rgba(52,211,153,0.10); }
+    .lapsed-badge.quiet-badge { color: var(--muted); border-color: var(--border); background: var(--surface2); }
+    .activity-status { font-size: 11px; color: var(--muted); margin: -4px 0 10px; cursor: help; }
+    .activity-status.activity-quiet { color: #fb923c; }
     /* Green on purpose: this is the one line in the modal that says the building exists and
        people are in it, which is a stronger claim than any status string above it. */
     .cofo-status {
@@ -811,6 +817,11 @@
     /* Deliberately muted rather than a warning colour: nothing is wrong, the data simply
        doesn't say when these were filed. It sits above the grid so it is read before the
        result count is taken as the whole story. */
+    .an-undated {
+      font-size: 12px; color: var(--muted); margin: -4px 0 16px;
+      border: 1px dashed var(--border); border-radius: var(--radius); padding: 8px 12px; cursor: help;
+    }
+    .an-undated b { color: var(--text); font-weight: 600; }
     .undated-note {
       grid-column: 1 / -1;
       font-size: 12px;
@@ -897,6 +908,16 @@
       font-size: 12px; padding: 6px 0; border-top: 1px solid var(--border);
     }
     .related-permits .rp-row span:last-child { color: var(--muted); white-space: nowrap; }
+    /* Scrolls instead of truncating: the list is the proof of the card's "+N more", so it
+       has to be able to show all N — the largest site is 48 permits. */
+    .related-permits .rp-list { max-height: 280px; overflow-y: auto; }
+    .related-permits .rp-addr { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* On a phone a multi-address row can't fit number, address, type and date: the address
+       truncated to "862…". In a development spanning addresses, which address is the point;
+       the permit type is the thing that can go. */
+    @media (max-width: 640px) {
+      .related-permits .rp-type-optional { display: none; }
+    }
 
 
     /* ── Map pins & clusters (both L.Marker/divIcon — same pane, so stacking/spiderfy z-order works) ── */
@@ -1346,6 +1367,7 @@
       <label class="ms-option" title="Issued permits that have lapsed or sat 5+ years unfinished, or reviews with no activity in 2+ years"><input type="checkbox" value="stalled"> ◷ Stalled</label>
       <label class="ms-option" title="Sent back for corrections and left in the applicant's court for over a year"><input type="checkbox" value="dormant"> ⏸ Dormant</label>
       <label class="ms-option" title="Filed, issued, or changed status since your last visit"><input type="checkbox" value="changed"> ◆ Changed since last visit</label>
+      <label class="ms-option" title="Issued over a year ago, and no trade or electrical permit filed at the site in the last 12 months — issued on paper, with none of the paperwork construction generates"><input type="checkbox" value="quiet"> ◌ Issued, no trade permits</label>
     </div>
   </div>
 
@@ -1354,7 +1376,7 @@
   <div class="view-toggle">
     <!-- Stays a visible button rather than moving into the overflow menu: it changes the
          headline value from $178.86B to $104.30B, which is too consequential to hide. -->
-    <button id="btn-group" class="group-toggle" title="One card per address instead of one per permit. SDCI stamps a project's value on every sub-permit, so six demolition permits at 8100 2nd Ave S each read $38.1M — grouped, that's one project.">⌂ By site</button>
+    <button id="btn-group" class="group-toggle" title="One card per site instead of one per permit — a site is every permit at the same address, or sharing an SDCI development id across neighbouring parcels. SDCI stamps a project's value on every sub-permit, so six demolition permits at 8100 2nd Ave S each read $38.1M — grouped, that's one project.">⌂ By site</button>
     <span class="seg">
       <button id="btn-grid" class="active">⊞ Cards</button>
       <button id="btn-map">⊕ Map</button>
@@ -1395,6 +1417,7 @@
       <span class="an-note" id="an-note">Citywide totals · not affected by the filters above (except City)</span>
     </div>
     <div class="an-stats" id="an-stats"></div>
+    <p class="an-undated" id="an-undated" hidden></p>
     <div class="an-charts">
       <div class="an-chart-card"><h3>Housing Units Added per Year</h3><p class="an-desc">Homes created by permits filed each year. For Seattle, the green line nets out units lost to demolition.</p><div class="chart-wrap"><canvas id="chart-units"></canvas></div></div>
       <div class="an-chart-card"><h3>Permits Filed per Year</h3><p class="an-desc">Permit applications submitted per year — the broadest measure of construction activity in the city.</p><div class="chart-wrap"><canvas id="chart-permits"></canvas></div></div>
@@ -1665,7 +1688,8 @@ let streetWorkOnly = false;
 let stalledOnly    = false;
 let dormantOnly    = false;
 let changedOnly    = false;
-let groupBySite    = false;   // Phase G: one card per address instead of one per permit
+let quietOnly      = false;
+let groupBySite    = false;   // Phase G: one card per site (address or SDCI development id) instead of one per permit
 const watchlist = new Set(loadJSON("chd-watchlist", []));
 const lastVisit = (() => { try { return localStorage.getItem("chd-last-visit"); } catch { return null; } })();
 const watchStatusPrev = loadJSON("chd-watch-status", {});
@@ -1676,20 +1700,24 @@ let watchChanges = {};  // permitnum → previous status key, computed once per 
 // MUP → DM → CN/PH and the watchlist should follow all of it, not just the one you clicked.
 // The stored list is still permit numbers so existing watchlists keep working; the set of
 // watched sites is derived from it whenever it or the data changes.
+//
+// "Site" is the site index's definition (address OR SDCI development id), the same one the
+// card grid uses. It was the address alone until 2026-09-22, so starring the 12-permit
+// DV0065844 development watched the 2 permits at the one address you happened to click.
 let watchedSites = new Set();
 function rebuildWatchedSites() {
-  watchedSites = new Set(allPermits.filter(p => watchlist.has(p.permitnum)).map(normalizeAddr).filter(Boolean));
+  watchedSites = new Set(allPermits.filter(p => watchlist.has(p.permitnum)).map(siteKeyOf));
 }
 function isWatched(p) {
-  return watchlist.has(p.permitnum) || (watchedSites.size > 0 && watchedSites.has(normalizeAddr(p)));
+  return watchlist.has(p.permitnum) || (watchedSites.size > 0 && watchedSites.has(siteKeyOf(p)));
 }
 function toggleWatch(pn) {
   const p = allPermits.find(x => x.permitnum === pn);
   if (p && isWatched(p) && !watchlist.has(pn)) {
     // Clicking a sibling that is only watched via its site means "stop watching this site":
-    // drop every stored permit at that address, not just this one.
-    const addr = normalizeAddr(p);
-    for (const x of allPermits) if (watchlist.has(x.permitnum) && normalizeAddr(x) === addr) watchlist.delete(x.permitnum);
+    // drop every stored permit in that site, not just this one.
+    const key = siteKeyOf(p);
+    for (const x of allPermits) if (watchlist.has(x.permitnum) && siteKeyOf(x) === key) watchlist.delete(x.permitnum);
   } else if (watchlist.has(pn)) {
     watchlist.delete(pn);
   } else {
@@ -1723,6 +1751,7 @@ const FLAGS = [
   ["stalled", () => stalledOnly,    v => { stalledOnly    = v; }],
   ["dormant", () => dormantOnly,    v => { dormantOnly    = v; }],
   ["changed", () => changedOnly,    v => { changedOnly    = v; }],
+  ["quiet",   () => quietOnly,      v => { quietOnly      = v; }],
 ];
 
 // Push the booleans back into the dropdown. Needed whenever something outside the dropdown
@@ -1750,7 +1779,7 @@ function toggleChangedFilter() { setFlag("changed", !changedOnly); }
 function syncCityOnlyButtons() {
   const supported = currentCity !== "bellevue";
   const panel = document.querySelector("#ms-flags .ms-panel");
-  for (const key of ["street", "stalled", "dormant"]) {
+  for (const key of ["street", "stalled", "dormant", "quiet"]) {
     const f = FLAGS.find(([k]) => k === key);
     if (!supported && f[1]()) f[2](false);
     const opt = panel?.querySelector(`input[value="${key}"]`)?.closest(".ms-option");
@@ -2228,6 +2257,107 @@ function cofoStatusHTML(p) {
   return `<div class="cofo-status" title="Seattle issued a Certificate of Occupancy for this permit — the city's inspection sign-off that the building is finished and legal to occupy. A stronger completion signal than the permit's own status field.">Occupied · ${bits.join(" · ") || "certificate on file"}</div>`;
 }
 
+// ── Construction activity (trade + electrical permits) ───────────────────────
+// A building permit sits on "Issued" for years and never says whether anyone is building.
+// Trade (mechanical/plumbing, c87v-5hwh) and electrical (c4tj-daue) permits are pulled by the
+// subcontractors as the work proceeds, so they are a direct heartbeat — and a separate
+// signal from anything SDCI's own status field records.
+// Measured 2026-09-22 over the 702 active "Issued" permits in the slice: 334 (47%) had a
+// trade or electrical permit filed in the preceding 12 months; 368 (52%) had neither.
+//
+// Both datasets carry their own permit numbers, so the join is by address — the same
+// uppercase SDCI address string the building permits use, matched exactly by SODA. Only the
+// addresses of issued projects are asked about, and the server does the grouping, so this
+// is ~6 requests and ~26 KB rather than a download of 789k rows. Started after the grid is
+// up, with the other joins; nothing on the critical path waits for it.
+const TRADE_API = "https://data.seattle.gov/resource/c87v-5hwh.json";
+const ELEC_API  = "https://data.seattle.gov/resource/c4tj-daue.json";
+const ACTIVITY_WINDOW_DAYS = 365;
+let ACTIVITY = new Map();        // normalised address → { last: "YYYY-MM-DD", trade, elec }
+// Absence of a row means "no activity" ONLY once the fetch has landed. Before that it means
+// "not known yet", and treating those as the same would stamp every issued project as quiet
+// for the second or two before the data arrives — the same load-order trap the certificate
+// join created for the changed-since-visit baseline.
+let activityLoaded = false;
+
+async function fetchActivity(rawAddrs) {
+  const since = new Date(seattleTodayMs() - ACTIVITY_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const out = new Map();
+  const CHUNK = 250;   // ~27 chars per quoted address keeps each URL under ~7 KB
+  for (const [api, field] of [[TRADE_API, "trade"], [ELEC_API, "elec"]]) {
+    for (let i = 0; i < rawAddrs.length; i += CHUNK) {
+      const list = rawAddrs.slice(i, i + CHUNK).map(a => `'${a.replace(/'/g, "''")}'`).join(",");
+      const params = new URLSearchParams({
+        "$select": "originaladdress1, max(applieddate) AS last, count(*) AS n",
+        "$where":  `originaladdress1 in (${list}) AND applieddate > '${since}'`,
+        "$group":  "originaladdress1",
+        "$limit":  String(CHUNK + 10),
+      });
+      if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
+      const res = await fetch(`${api}?${params}`);
+      if (!res.ok) throw new Error(`${field} permits HTTP ${res.status}`);
+      for (const r of await res.json()) {
+        const k = normalizeAddrStr(r.originaladdress1 || "");
+        if (!k) continue;
+        const e = out.get(k) || { last: "", trade: 0, elec: 0 };
+        const last = (r.last || "").slice(0, 10);
+        if (last > e.last) e.last = last;
+        e[field] += parseInt(r.n, 10) || 0;
+        out.set(k, e);
+      }
+    }
+  }
+  return out;
+}
+
+// Activity across p's whole site: a development spanning parcels can pull its trade permits
+// at any of them. Returns null when there is none, or when it isn't known.
+function activityFor(p) {
+  if (p._city === "bellevue" || !activityLoaded) return null;
+  let best = null;
+  for (const a of siteAddrsOf(p).size ? siteAddrsOf(p) : [normalizeAddr(p)]) {
+    const e = ACTIVITY.get(a);
+    if (!e) continue;
+    if (!best) best = { last: e.last, trade: e.trade, elec: e.elec };
+    else { if (e.last > best.last) best.last = e.last; best.trade += e.trade; best.elec += e.elec; }
+  }
+  return best;
+}
+
+// Issued more than a year ago and not one trade or electrical permit pulled in the last year.
+// Both halves matter: a permit issued last month with nothing yet is simply early, and a
+// permit with activity is by definition not quiet. False whenever it can't be judged.
+function isQuiet(p) {
+  if (p._city === "bellevue" || !activityLoaded || getStatus(p) !== "issued") return false;
+  const iss = permitDateMs(p.issueddate);
+  if (!Number.isFinite(iss) || seattleTodayMs() - iss < ACTIVITY_WINDOW_DAYS * 86400000) return false;
+  return !activityFor(p);
+}
+
+function activityBadgeHTML(p, inline) {
+  if (p._city === "bellevue" || !activityLoaded || getStatus(p) !== "issued") return "";
+  const style = inline ? ' style="margin-top:0"' : "";
+  const a = activityFor(p);
+  if (a && a.last) {
+    const ago = Math.floor((seattleTodayMs() - permitDateMs(a.last)) / 86400000);
+    if (ago > 90) return "";   // some activity this year, but not recent enough to call it live
+    return `<span class="lapsed-badge activity-badge"${style} title="Latest trade or electrical permit filed ${esc(fmtDate(a.last))} — ${a.trade} trade and ${a.elec} electrical in the last 12 months. Subcontractors pull these as work proceeds, so recent ones mean someone is building.">Trade permits active</span>`;
+  }
+  return isQuiet(p)
+    ? `<span class="lapsed-badge quiet-badge"${style} title="Issued over a year ago, and no trade or electrical permit has been filed at this site in the last 12 months. Issued status alone never tells you whether anyone is building; this is the absence of the paperwork that construction generates.">No trade permits in 12 mo</span>`
+    : "";
+}
+
+// One line in the modal, for any issued Seattle permit once the data is in.
+function activityStatusHTML(p) {
+  if (p._city === "bellevue" || !activityLoaded || getStatus(p) !== "issued") return "";
+  const a = activityFor(p);
+  const text = a
+    ? `Construction activity · latest trade/electrical permit ${esc(fmtDate(a.last))} · ${a.trade} trade, ${a.elec} electrical in the last 12 months`
+    : `Construction activity · no trade or electrical permits filed at this site in the last 12 months`;
+  return `<div class="activity-status${a ? "" : " activity-quiet"}" title="From Seattle's Trade and Electrical Permits datasets, matched by address across the whole site.">${text}</div>`;
+}
+
 // Both joins ride in after the grid is already up and repaint it when they land, and both
 // must be dropped on the floor if a city switch happened while they were in flight — so they
 // share one generation gate rather than keeping two copies of the same three lines. This
@@ -2245,6 +2375,20 @@ function startBackgroundJoins() {
   fetchLandUse(mups)
     .then(idx => { if (gen !== dataGeneration) return; LU_INDEX = idx; settle(false); })
     .catch(e => console.warn("Land use fetch failed", e));
+
+  // Construction activity for the issued projects. Asks about every address in each issued
+  // project's SITE, not just the permit's own, since a multi-parcel development can pull its
+  // trade permits at any of them. Must sit above the certificate block, whose early return
+  // on a warm cache would otherwise skip it on a switch back to Seattle.
+  const rawAddrs = new Set();
+  for (const p of allPermits) {
+    if (getStatus(p) !== "issued") continue;
+    for (const x of SITE_MEMBERS.get(siteKeyOf(p)) || [p]) if (x.originaladdress1) rawAddrs.add(x.originaladdress1);
+  }
+  activityLoaded = false;
+  fetchActivity([...rawAddrs])
+    .then(idx => { if (gen !== dataGeneration) return; ACTIVITY = idx; activityLoaded = true; settle(false); })
+    .catch(e => console.warn("Trade/electrical activity fetch failed", e));
 
   // The certificate index is the whole dataset and keyed by permit number, so it doesn't
   // depend on which city is loaded and never goes stale within a session — switching to
@@ -2879,7 +3023,7 @@ function filedMs(p) {
 // wrong answer this project keeps getting caught by, so the grid says so instead.
 let dateHiddenCount = 0;
 // The permits behind that tally. Kept because the note has to be counted the same way the
-// grid is: with "By site" on the cards are addresses, so a raw permit count overstates how
+// grid is: with "By site" on the cards are sites, so a raw permit count overstates how
 // many cards you would gain — the 3,622 undated Seattle permits sit on 2,190 addresses, a
 // 39% overstatement.
 let dateHiddenPermits = [];
@@ -2916,6 +3060,8 @@ function stuckBadgesHTML(p, inline) {
     const cycles = parseInt(p.numberreviewcycles, 10);
     out.push(`<span class="lapsed-badge dormant-badge"${style} title="Cumulative days this permit has spent in the applicant's court across all review rounds. SDCI sent corrections back and is waiting on a response.">Awaiting applicant ${esc(fmtDuration(d))}${Number.isFinite(cycles) && cycles > 0 ? ` · round ${cycles}` : ""}</span>`);
   }
+  const act = activityBadgeHTML(p, inline);
+  if (act) out.push(act);
   return out.join("");
 }
 
@@ -3107,69 +3253,146 @@ let gridLimit = GRID_PAGE;
 // re-sort the grid by a rule nobody selected. Site-level facts ride on the representative.
 // SDCI's own project id, which the app ignored for a year. Occasionally a permit carries
 // more than one, comma-separated ("DV0081200, DV0084140"), and each is a real link.
+// Shape-checked: every one of the 1,938 distinct ids in the data today is two letters and
+// seven digits (DV… development sites, a couple of RW… SDOT numbers). Union-find is
+// transitive and nothing else caps a group, so one placeholder or malformed value in a
+// future refresh would chain unrelated projects into a single card without limit — anything
+// that doesn't look like an id is ignored rather than trusted.
+const DEV_ID_RE = /^[A-Z]{2}\d{7}$/;
 function devIds(p) {
   const raw = (p.development_site || "").trim();
-  return raw ? raw.split(",").map(d => d.trim()).filter(Boolean) : [];
+  return raw ? raw.split(",").map(d => d.trim()).filter(d => DEV_ID_RE.test(d)) : [];
 }
 
-function groupSites(permits) {
-  // Union-find over two independent keys: the normalised address, and every development id
-  // the permit carries. Permits reachable through either end up on one card.
-  //
-  // It has to be a UNION rather than a preference, and that is not obvious — I measured the
-  // naive version first. Preferring development_site over the address where one exists
-  // produced MORE cards, not fewer (6,395 against 5,983), because a single development id
-  // can be attached to only some of the permits at a shared address, splitting a group that
-  // address-matching already had right. Unioning keeps both relationships.
-  //
-  // What it buys: 59 developments spanning more than one address — 214 permits, 6,599 homes,
-  // $1.75B — that address-matching structurally cannot see. DV0065844 is 12 permits across
-  // 9 addresses at 1101 NE Campus Pkwy; 583 Battery St is 698 homes across 2. Net card count
-  // only moves ~108 (1.8%), but the merges land almost entirely on the large projects this
-  // app exists to show.
+// ── Site index ───────────────────────────────────────────────────────────────
+// What "one site" means, decided ONCE per data load over every loaded permit, and then read
+// by everything that talks about sites: the card grid, the pill, the modal, the watchlist,
+// the CSV and the undated note.
+//
+// This used to be a union-find re-run inside groupSites() over whatever list it was handed.
+// That made the grid's definition of a site the only one in the app: the pill counted the
+// development (union of address + development id) while the modal, the watchlist and the
+// NEW/CHANGED chips still worked by address. 59 cards read "+12 more at this address" above
+// a modal listing zero, and starring a 12-permit development watched 2 of them. It also
+// meant a site's identity changed with the filters — a permit hidden by a filter could no
+// longer link two visible ones — and the undated note had to infer extra cards by
+// subtracting two groupings, which would silently undercount the day a hidden permit
+// bridged two visible groups.
+//
+// Union-find over two keys: the normalised address, and every development id the permit
+// carries. It has to be a UNION rather than a preference — preferring the id where one
+// exists produced MORE cards (6,395 against 5,983), because an id is sometimes attached to
+// only some of the permits at a shared address, splitting a group address-matching had right.
+//
+// Rebuilt lazily whenever allPermits is replaced (every load and city switch assigns a new
+// array), so callers just ask and never have to remember to invalidate it.
+let siteIndexFor = null;               // the allPermits array the index was built from
+let SITE_OF = new Map();               // permitnum → site key
+let SITE_OF_ADDR = new Map();          // normalised address → site key
+let SITE_MEMBERS = new Map();          // site key → permits in allPermits, input order
+let SITE_ADDRS = new Map();            // site key → Set of normalised addresses
+
+function ensureSiteIndex() {
+  if (siteIndexFor === allPermits) return;
   const parent = new Map();
-  function find(x) {
+  const find = x => {
     if (!parent.has(x)) { parent.set(x, x); return x; }
     let r = x;
     while (parent.get(r) !== r) r = parent.get(r);
     while (parent.get(x) !== r) { const nxt = parent.get(x); parent.set(x, r); x = nxt; }
     return r;
-  }
-  function union(a, b) {
-    const ra = find(a), rb = find(b);
-    if (ra !== rb) parent.set(ra, rb);
-  }
+  };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
 
-  for (const p of permits) {
+  for (const p of allPermits) {
     const self = `P:${p.permitnum}`;
     find(self);
     const addr = normalizeAddr(p);
-    if (addr) union(self, `A:${addr}`);   // no address and no dev id: stays its own card
+    if (addr) union(self, `A:${addr}`);    // no address and no dev id: stays its own site
     for (const d of devIds(p)) union(self, `D:${d}`);
   }
 
+  SITE_OF = new Map(); SITE_OF_ADDR = new Map(); SITE_MEMBERS = new Map(); SITE_ADDRS = new Map();
+  for (const p of allPermits) {
+    const k = find(`P:${p.permitnum}`);
+    SITE_OF.set(p.permitnum, k);
+    if (!SITE_MEMBERS.has(k)) { SITE_MEMBERS.set(k, []); SITE_ADDRS.set(k, new Set()); }
+    SITE_MEMBERS.get(k).push(p);
+    const addr = normalizeAddr(p);
+    if (addr) { SITE_ADDRS.get(k).add(addr); SITE_OF_ADDR.set(addr, k); }
+  }
+  siteIndexFor = allPermits;
+  groupSitesMemo = null;
+}
+
+// The site a permit belongs to. Permits outside allPermits — the any-value site history a
+// neighbourhood load brings in — resolve through their address, so they join the same site
+// as the loaded permits at that address.
+function siteKeyOf(p) {
+  ensureSiteIndex();
+  return SITE_OF.get(p.permitnum) || SITE_OF_ADDR.get(normalizeAddr(p)) || `P:${p.permitnum}`;
+}
+function siteAddrsOf(p) { return SITE_ADDRS.get(siteKeyOf(p)) || new Set(); }
+
+// Every permit in p's site: the loaded group members, plus — when a neighbourhood's full
+// history is loaded — everything at each of the site's addresses. Deduped, p excluded.
+function siteSiblingsOf(p) {
+  const key = siteKeyOf(p);
+  const out = new Map();
+  for (const x of SITE_MEMBERS.get(key) || []) out.set(x.permitnum, x);
+  if (historyLoaded) {
+    const addrs = SITE_ADDRS.get(key) || new Set([normalizeAddr(p)]);
+    for (const a of addrs) for (const x of addressIndex.get(a) || []) out.set(x.permitnum, x);
+  }
+  out.delete(p.permitnum);
+  return [...out.values()];
+}
+
+// One card per site, over the filtered list. Now a single pass of Map lookups (the union-find
+// lives in ensureSiteIndex), and memoised on the exact array it was handed: renderGrid,
+// updateStats and every "Show more" click all ask about the same list, and used to pay for
+// three full union-finds per render — measured 10.0 ms per call against 3.2 ms before the
+// rewrite — to answer a question whose answer could not have changed.
+let groupSitesMemo = null;             // { input, output }
+function groupSites(permits) {
+  ensureSiteIndex();
+  if (groupSitesMemo && groupSitesMemo.input === permits) return groupSitesMemo.output;
   const seen = new Map();
   const out = [];
   for (const p of permits) {
-    // The representative is still the FIRST permit of each group in the already-sorted
-    // input, not the most-recently-active one the map uses. That keeps the user's chosen
-    // sort meaningful ("Highest Value" still puts the biggest project first); picking by
-    // activity would quietly re-sort the grid by a rule nobody selected.
-    const k = find(`P:${p.permitnum}`);
+    // The representative is still the FIRST permit of each site in the already-sorted input,
+    // not the most-recently-active one the map uses. That keeps the user's chosen sort
+    // meaningful ("Highest Value" still puts the biggest project first).
+    const k = siteKeyOf(p);
     let rep = seen.get(k);
     if (!rep) {
       rep = Object.assign(Object.create(Object.getPrototypeOf(p)), p);   // copy — never mutate allPermits
+      rep._siteKey = k;
       rep._siteN = 0; rep._siteMaxVal = 0; rep._siteNew = false; rep._siteChanged = false;
-      rep._siteAddrs = new Set();
+      rep._siteAddrs = SITE_ADDRS.get(k) || new Set();   // the whole site's footprint, not just the filtered rows
       seen.set(k, rep); out.push(rep);
     }
     rep._siteN++;
     rep._siteMaxVal = Math.max(rep._siteMaxVal, parseFloat(p.estprojectcost) || 0);
-    if (normalizeAddr(p)) rep._siteAddrs.add(normalizeAddr(p));
     if (isNewSinceVisit(p)) rep._siteNew = true;
     if (watchChanges[p.permitnum]) rep._siteChanged = true;
   }
+  groupSitesMemo = { input: permits, output: out };
   return out;
+}
+
+// The "+N more" pill. It used to say "+N more at this address" whatever the group was, which
+// became false the day grouping learned about development ids: 8535 22nd Pl NE read "+12 more
+// at this address" when all 12 were at other addresses. Now it says what the site actually
+// is — and the modal lists exactly those permits, so the claim can be checked by clicking.
+function sitePillHTML(p) {
+  const more  = p._siteN - 1;
+  const addrs = p._siteAddrs ? p._siteAddrs.size : 1;
+  const label = addrs > 1 ? `+${more} more · ${addrs} addresses` : `+${more} more at this address`;
+  const tip   = addrs > 1
+    ? `One development across ${addrs} addresses, linked by SDCI's development id. Open the card to see all ${p._siteN} permits.`
+    : `Grouped by address. Open the card to see all ${p._siteN} permits here.`;
+  return `<span class="site-pill" title="${esc(tip)}">${esc(label)}</span>`;
 }
 
 function renderGrid(permits) {
@@ -3185,9 +3408,17 @@ function renderGrid(permits) {
   // are folded into the same grouping and the figure becomes how many EXTRA cards you would
   // gain — an undated permit sharing an address with a visible one adds no card at all, so
   // the raw permit count overstated it by 39%.
-  const hiddenCards = !dateHiddenCount ? 0
-    : groupBySite ? groupSites(permits.concat(dateHiddenPermits)).length - list.length
-    : dateHiddenCount;
+  // Grouped, the figure is counted directly — distinct sites among the hidden permits that
+  // no visible permit already represents — rather than by subtracting two groupings. The
+  // subtraction assumed a hidden permit could only ADD a card; one that linked two visible
+  // groups would have subtracted instead, and at the limit hidden the note entirely.
+  let hiddenCards = dateHiddenCount;
+  if (dateHiddenCount && groupBySite) {
+    const shown = new Set(list.map(r => r._siteKey));
+    const extra = new Set();
+    for (const p of dateHiddenPermits) { const k = siteKeyOf(p); if (!shown.has(k)) extra.add(k); }
+    hiddenCards = extra.size;
+  }
   const hiddenNoun = groupBySite ? (hiddenCards === 1 ? "site" : "sites")
                                  : (hiddenCards === 1 ? "permit" : "permits");
   const undatedNote = hiddenCards > 0
@@ -3279,8 +3510,8 @@ function renderGrid(permits) {
       <div class="card-header">
         <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
         <span style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-          ${(isNewSinceVisit(p) || p._siteNew) ? `<span class="chip-new" title="${p._siteNew && !isNewSinceVisit(p) ? "A permit at this address was filed or issued since your last visit" : "Filed or issued since your last visit"}">NEW</span>` : ""}
-          ${(changedFrom || p._siteChanged) ? `<span class="chip-changed" title="${changedFrom ? `Was ${statusLabel(changedFrom)} on your last visit` : "A permit at this address changed status since your last visit"}">CHANGED</span>` : ""}
+          ${(isNewSinceVisit(p) || p._siteNew) ? `<span class="chip-new" title="${p._siteNew && !isNewSinceVisit(p) ? "A permit in this site was filed or issued since your last visit" : "Filed or issued since your last visit"}">NEW</span>` : ""}
+          ${(changedFrom || p._siteChanged) ? `<span class="chip-changed" title="${changedFrom ? `Was ${statusLabel(changedFrom)} on your last visit` : "A permit in this site changed status since your last visit"}">CHANGED</span>` : ""}
           <button class="star-btn${isWatched(p) ? " starred" : ""}" data-pn="${num}" title="${isWatched(p) ? "Stop watching" : "Watch this project"}">${isWatched(p) ? "★" : "☆"}</button>
           <span class="badge ${status}">${statusLabel(status)}</span>
         </span>
@@ -3331,7 +3562,7 @@ function renderGrid(permits) {
         ${lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : ""}
         ${stuckBadgesHTML(p, false)}
         ${luStatusHTML(p)}
-        ${p._siteN > 1 ? `<span class="site-pill" title="Grouped by address — open the card to page through all ${p._siteN} permits here">+${p._siteN - 1} more at this address</span>` : ""}
+        ${p._siteN > 1 ? sitePillHTML(p) : ""}
       </div>
 
       <div class="card-footer">
@@ -3426,11 +3657,17 @@ function openModal(pn) {
   const ptLabel = getPermitTypeLabel(p);
   const hasLoc  = parseFloat(p.latitude) && parseFloat(p.longitude);
 
-  // Related permits: full site history when a neighborhood is loaded, else other loaded permits at this address
-  const myAddr  = normalizeAddr(p);
-  const related = (historyLoaded ? sitePermitsFor(p) : allPermits.filter(x => normalizeAddr(x) === myAddr))
-    .filter(x => (x.permitnum || "") !== rawNum)
-    .slice(0, 8);
+  // Related permits: everything in this permit's SITE, from the same index the card's pill
+  // counts from — so "+12 more" on the card means 12 rows here. This used to be the address
+  // alone and capped at 8, which is how a card could promise 12 and the modal show none.
+  // Newest first; the list scrolls rather than truncating, since the largest site is 48.
+  const siteAddrs  = siteAddrsOf(p);
+  const multiAddr  = siteAddrs.size > 1;
+  const related = siteSiblingsOf(p).sort((a, b) =>
+    (b.issueddate || b.applieddate || "").localeCompare(a.issueddate || a.applieddate || ""));
+  const relatedHeading = multiAddr
+    ? `${historyLoaded ? "Site history" : "Other loaded permits"} · this development spans ${siteAddrs.size} addresses`
+    : (historyLoaded ? "Site history at this address" : "Other loaded permits at this address");
 
   document.getElementById("modal-body").innerHTML = `
     <button class="modal-close" aria-label="Close">✕</button>
@@ -3448,6 +3685,7 @@ function openModal(pn) {
     </div>
     ${timelineHTML(p)}
     ${cofoStatusHTML(p)}
+    ${activityStatusHTML(p)}
     ${reviewStatsHTML(p)}
     ${luStatusHTML(p)}
     <div class="modal-desc">${esc(p.description || "No description provided.")}</div>
@@ -3457,12 +3695,13 @@ function openModal(pn) {
       <div class="meta-item"><span class="meta-key">Status</span><span class="meta-val">${esc(p.statuscurrent || "—")}</span></div>
     </div>
     ${related.length ? `<div class="related-permits">
-      <h4>${historyLoaded ? "Site history at this address" : "Other loaded permits at this address"}</h4>
-      ${related.map(r => `<div class="rp-row rp-link" data-pn="${esc(r.permitnum || "")}" role="button" tabindex="0" title="Open this permit">
+      <h4>${esc(relatedHeading)}</h4>
+      <div class="rp-list">${related.map(r => `<div class="rp-row rp-link" data-pn="${esc(r.permitnum || "")}" role="button" tabindex="0" title="Open this permit">
         <span style="font-family:monospace">${esc(r.permitnum || "—")}</span>
-        <span>${esc(getPermitTypeLabel(r).label)}</span>
+        ${multiAddr ? `<span class="rp-addr">${esc(r.originaladdress1 || "—")}</span>` : ""}
+        <span class="rp-type${multiAddr ? " rp-type-optional" : ""}">${esc(getPermitTypeLabel(r).label)}</span>
         <span>${fmtDate(r.issueddate || r.applieddate)}</span>
-      </div>`).join("")}
+      </div>`).join("")}</div>
     </div>` : ""}
     <div class="card-links" style="border-top:1px solid var(--border);padding-top:12px;margin-top:14px">
       <a class="card-link" href="${detailUrl}" target="_blank" rel="noopener">Permit Portal ↗</a>
@@ -4557,7 +4796,7 @@ async function fetchSeattleAnalytics(largeOnly) {
   const dupWhere = `housingunitsadded > 0 AND applieddate >= '${startYear}-01-01' AND applieddate <= '${today}'${scope}`;
 
   const [yearly, ytd, ytdPrior, review, monthly, pipe, outTotals, outAbandoned, adu, nbhdRows, cpuYearly,
-         dupByYear, dupPriorYtd, builderRows] = await Promise.all([
+         dupByYear, dupPriorYtd, builderRows, undatedRows, scopeTotal] = await Promise.all([
     soqlFetch({ "$select": "date_extract_y(applieddate) AS year, " + ytdSelect + ", sum(housingunitsremoved) AS removed",
                 "$group": "year", "$order": "year",
                 "$where": `applieddate >= '${startYear}-01-01'${scope}` }),
@@ -4627,6 +4866,17 @@ async function fetchSeattleAnalytics(largeOnly) {
                 "$where": `contractorcompanyname IS NOT NULL AND housingunitsadded > 0 ` +
                           `AND permittypemapped <> 'Demolition' ` +
                           `AND applieddate between '${BUILDER_ERA[0]}-01-01' and '${BUILDER_ERA[1]}-12-31'${scope}` })
+      .catch(() => null),
+    // Every chart above is scoped on applieddate, so permits SDCI never dated cannot appear in
+    // any of them. That is a third of the $1M+ slice (3,668 of 11,018 on 2026-09-22), and the
+    // biggest bucket is 1,931 "Additional Info Requested" — the permits most likely to be
+    // stuck, missing from the chart that asks which permits get stuck. The card grid already
+    // says this out loud; these two queries let the analytics view say it too.
+    soqlFetch({ "$select": "statuscurrent, count(*) AS n",
+                "$group": "statuscurrent", "$order": "n DESC", "$limit": "100",
+                "$where": `applieddate IS NULL${scope}` })
+      .catch(() => null),
+    soqlFetch({ "$select": "count(*) AS n", ...(scope ? { "$where": scope.replace(/^ AND /, "") } : {}) })
       .catch(() => null),
   ]);
 
@@ -4707,6 +4957,12 @@ async function fetchSeattleAnalytics(largeOnly) {
       : null,
     nbhd,
     builders: mergeBuilders(builderRows),
+    undated: undatedRows && scopeTotal ? {
+      // Every status is returned (there are ~25), so the sum is the true undated total.
+      n: undatedRows.reduce((a, r) => a + (+r.n || 0), 0),
+      total: +(scopeTotal[0]?.n || 0),
+      top: undatedRows.slice(0, 3).map(r => ({ status: r.statuscurrent || "(none)", n: +r.n || 0 })),
+    } : null,
     // Same de-duplication as the yearly series — cost per unit divides by this, so leaving
     // it inflated would understate what a home actually costs to build.
     cpuYearly: cpuYearly
@@ -4898,6 +5154,19 @@ function renderAnalytics(d) {
     );
   }
 
+  // The undated disclosure. Hidden for Bellevue (no such query) and when nothing is missing.
+  const undEl = document.getElementById("an-undated");
+  const u = d.undated;
+  if (u && u.n > 0 && u.total > 0) {
+    const pct = Math.round(u.n * 100 / u.total);
+    const top = u.top.map(t => `${t.n.toLocaleString()} ${esc(t.status)}`).join(", ");
+    undEl.innerHTML = `<b>${u.n.toLocaleString()} permits (${pct}%) carry no filing date</b> and can't appear in any by-year chart below — ${top}. The charts describe the dated ${100 - pct}%.`;
+    undEl.title = "SDCI has recorded no application date for these, and every chart here is bucketed by filing year, so there is no year to put them in. The largest group is typically permits sent back for more information — the ones most likely to be stuck — which matters most for the outcomes chart.";
+    undEl.hidden = false;
+  } else {
+    undEl.hidden = true;
+  }
+
   document.getElementById("an-stats").innerHTML = cards.map(c => {
     const delta = c.prev > 0 ? (c.cur - c.prev) / c.prev * 100 : null;
     const badge = delta === null ? "" :
@@ -5061,7 +5330,7 @@ document.getElementById("scope-large").addEventListener("click", () => setScope(
 // init reads the URL first, then localStorage. Before this only city/view/scope survived —
 // "Capitol Hill + In Progress + $10M+" produced a bare URL and reset on reload.
 const STATE_KEYS = ["city","view","scope","nb","status","use","type","minval","filed","sort","search",
-                    "watched","street","stalled","dormant","changed","layers","recent","group"];
+                    "watched","street","stalled","dormant","changed","quiet","layers","recent","group"];
 function currentState() {
   const $ = id => document.getElementById(id);
   const layers = [];
@@ -5081,7 +5350,7 @@ function currentState() {
     sort:    $("sort-by")?.value || "",
     search:  $("search")?.value || "",
     watched: watchedOnly, street: streetWorkOnly, stalled: stalledOnly, dormant: dormantOnly,
-    changed: changedOnly, group: groupBySite,
+    changed: changedOnly, quiet: quietOnly, group: groupBySite,
     layers,
     recent:  recentMode ? recentCount : 0,
     theme:   currentTheme,
@@ -5112,6 +5381,7 @@ function syncState() {
     if (s.stalled)            p.set("stalled", "1");
     if (s.dormant)            p.set("dormant", "1");
     if (s.changed)            p.set("changed", "1");
+    if (s.quiet)              p.set("quiet", "1");
     if (s.group)              p.set("group", "site");
     if (s.layers.length)      p.set("layers", s.layers.join(","));
     if (s.recent)             p.set("recent", String(s.recent));
@@ -5265,6 +5535,7 @@ function getFilteredList() {
     if (stalledOnly && !isStalled(p)) return false;
     if (dormantOnly && !isDormant(p)) return false;
     if (changedOnly && !isChangedSinceVisit(p)) return false;
+    if (quietOnly && !isQuiet(p)) return false;
     if (!neighborhoodMatch(p, nbF)) return false;
     // For Bellevue permits without valuation (included by type), skip the value filter
     const cost = parseFloat(p.estprojectcost) || 0;
@@ -5318,7 +5589,8 @@ function exportCSV() {
   const header = ["Permit", "Address", "City", "Neighborhood", "Status", "Status (raw)",
                   "Permit type", "Building use", "Units", "Est. value",
                   "Applied", "Issued", "Completed", "Occupied (CofO)", "Occupancy type",
-                  "Permits at site", "Description", "Portal URL"];
+                  "Permits at site", "Site addresses", "Development id",
+                  "Last trade/electrical permit", "Description", "Portal URL"];
   const body = rows.map(p => {
     const cofo = cofoFor(p);
     const cityStr = p._city === "bellevue" ? "Bellevue" : "Seattle";
@@ -5335,6 +5607,12 @@ function exportCSV() {
       (p.finaleddate || p.completeddate || "").slice(0, 10),
       cofo ? (cofo.date || "on file") : "", cofo ? cofo.type : "",
       groupBySite ? (p._siteN || 1) : "",
+      // A grouped row used to name only its representative's address, so "8535 22ND PL NE,
+      // 13 permits at site" silently hid that 12 of them were elsewhere. Every address in the
+      // site is listed; it's the whole site's footprint, independent of the filters.
+      groupBySite ? [...siteAddrsOf(p)].sort().join("; ") : "",
+      devIds(p).join("; "),
+      activityFor(p)?.last || "",
       p.description || "", url,
     ].map(csvCell).join(",");
   });

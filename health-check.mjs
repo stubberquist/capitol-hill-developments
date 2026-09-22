@@ -56,7 +56,19 @@ const EXPECT = {
   // expiresdate did — so it gets its own floor rather than being invisible if it empties.
   // 1,897 of the app's permits carry one; 500 leaves plenty of room for ordinary drift.
   cofo: 500,
+  // Addresses with a trade or electrical permit in the last year, among issued projects —
+  // the construction-heartbeat join. Measured ~250; a collapse to near zero would make every
+  // issued project read "No trade permits in 12 mo", which is exactly the kind of confident,
+  // silent wrong answer this list exists to catch.
+  activity: 50,
 };
+
+// Largest number of distinct addresses any one site may span. The site index unions
+// permits through SDCI development ids transitively, so one bad or shared id in a future
+// refresh would chain unrelated projects into a single card. Largest real span today: 13
+// (a townhouse row on two parallel streets). Ids are shape-checked in the app as well; this
+// catches whatever gets past that.
+const MAX_SITE_ADDRESSES = 40;
 
 // Floors for the map and analytics probes. These ran for weeks and their results went
 // straight into the JSON output without ever being compared to anything: `mapState` was
@@ -236,7 +248,18 @@ if (interactive) {
     sites: new Set(getFilteredList().filter(p=>p.latitude&&p.longitude).map(p=>p.latitude+","+p.longitude)).size })`).catch(() => null);
 
   await evaluate(`(()=>{setView("analytics");return true})()`).catch(() => {});
-  await new Promise(r => setTimeout(r, 9000));
+  // Polls, like every other wait in this file. It used to be a flat 9 s sleep, which was
+  // harmless while nothing asserted on the result — and became a false-alarm generator the
+  // moment a chart-count floor was added, on a path that also got slower when chart.js moved
+  // to on-demand loading. Measured 1.0-1.5 s to all 13 charts; this allows 25 s, and settles
+  // for a moment after the last chart so a late one isn't counted mid-construction.
+  for (let i = 0; i < 125; i++) {
+    const st = await evaluate(`({ n: Object.keys(anCharts).length,
+      failed: (document.getElementById("an-stats")?.textContent||"").includes("unavailable") })`).catch(() => null);
+    if (st && (st.failed || st.n >= 13)) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  await new Promise(r => setTimeout(r, 500));
   analyticsState = await evaluate(`({ charts: Object.keys(anCharts).length,
     unavailable: (document.getElementById("an-stats")?.textContent||"").includes("Charts unavailable"),
     // .num, not .value — renderAnalytics emits <span class="num">. The old selector matched
@@ -244,13 +267,29 @@ if (interactive) {
     ytdUnits: document.querySelector("#an-stats .an-stat .num")?.textContent || null })`).catch(() => null);
 }
 
-// The certificate join is fired in the background and repaints when it lands. By this point
-// the map and analytics waits above have already burned ~20s, so it is normally long since
-// settled — but a slow Socrata shouldn't be able to report an empty index as a data failure,
-// so wait for it explicitly rather than relying on that margin.
+// The certificate and trade/electrical joins are fired in the background and repaint when
+// they land. The map and analytics waits above usually cover them, but a slow Socrata
+// shouldn't be able to report an empty index as a data failure, so wait for each explicitly
+// rather than relying on that margin.
 if (interactive) {
   for (let i = 0; i < 60; i++) {
     if (await evaluate(`(typeof COFO_INDEX!=="undefined" && Object.keys(COFO_INDEX).length>0)`).catch(() => false)) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  // Same for the trade/electrical join, which starts alongside it.
+  for (let i = 0; i < 60; i++) {
+    if (await evaluate(`(typeof activityLoaded!=="undefined" && activityLoaded)`).catch(() => false)) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  // And street activity. The streetActivity floor never had a wait of its own: it was
+  // covered by accident, by the ~11.5 s of fixed sleeps above that happened to run before
+  // `data` was read. When the analytics sleep became a poll (~1.5 s), that slack vanished,
+  // and SDOT's ArcGIS query — measured at 9.2 s on a cold result cache — started losing the
+  // race: a local run reported "streetActivity = 0" with SDOT answering in 0.04 s moments
+  // later. Speeding up one wait silently broke an assertion that leaned on it, so every
+  // background source now gets an explicit wait of its own.
+  for (let i = 0; i < 100; i++) {
+    if (await evaluate(`(typeof STREET_ACTIVITY!=="undefined" && Object.keys(STREET_ACTIVITY).length>0)`).catch(() => false)) break;
     await new Promise(r => setTimeout(r, 250));
   }
 }
@@ -264,6 +303,9 @@ const data = interactive ? await evaluate(`({
   stalled: typeof isStalled==="function" ? allPermits.filter(isStalled).length : 0,
   dormant: typeof isDormant==="function" ? allPermits.filter(isDormant).length : 0,
   cofo: typeof hasCofO==="function" ? allPermits.filter(hasCofO).length : 0,
+  activity: typeof ACTIVITY!=="undefined" ? ACTIVITY.size : 0,
+  maxSiteAddresses: typeof SITE_ADDRS!=="undefined"
+    ? (ensureSiteIndex(), Math.max(0, ...[...SITE_ADDRS.values()].map(a => a.size))) : 0,
   cards: document.querySelectorAll(".card").length,
   // "Changed since your last visit" on a FRESH profile. This check always runs against a
   // throwaway user-data-dir, so there is no previous visit and the only correct answer is
@@ -331,6 +373,8 @@ if (data) {
   for (const [k, min] of Object.entries(EXPECT))
     if ((data[k] ?? 0) < min) problems.push(`${k} = ${data[k]} (expected >= ${min})`);
   if (data.duplicatePermitNums > 0) problems.push(`${data.duplicatePermitNums} duplicate permit numbers`);
+  if (data.maxSiteAddresses > MAX_SITE_ADDRESSES)
+    problems.push(`one site spans ${data.maxSiteAddresses} addresses (ceiling ${MAX_SITE_ADDRESSES}) — a development id is probably chaining unrelated projects into one card`);
   // Not an EXPECT key: those are floors ("at least N"), and this is a ceiling of zero.
   if (data.changedSinceVisit > 0)
     problems.push(`${data.changedSinceVisit} permits report as "changed since last visit" on a profile that has never visited before — the status baseline is being written and compared at different points in the load`);
