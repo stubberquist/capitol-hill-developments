@@ -817,6 +817,16 @@
     /* Deliberately muted rather than a warning colour: nothing is wrong, the data simply
        doesn't say when these were filed. It sits above the grid so it is read before the
        result count is taken as the whole story. */
+    /* "The City's data is missing" notices. Amber rather than red: the app isn't broken,
+       and neither is anything the user did — a source it depends on is out. */
+    .source-note {
+      grid-column: 1 / -1; font-size: 12px; color: #fb923c;
+      border: 1px dashed rgba(251,146,60,0.45); border-radius: var(--radius);
+      padding: 8px 12px; margin-bottom: 12px;
+    }
+    .source-note-modal { margin: -4px 0 10px; font-size: 11px; padding: 6px 10px; }
+    .ms-option .src-down { color: #fb923c; font-size: 11px; }
+    .mc-icon.unavailable { opacity: 0.55; box-shadow: inset 0 0 0 1.5px #fb923c; }
     .an-undated {
       font-size: 12px; color: var(--muted); margin: -4px 0 16px;
       border: 1px dashed var(--border); border-radius: var(--radius); padding: 8px 12px; cursor: help;
@@ -2257,6 +2267,92 @@ function cofoStatusHTML(p) {
   return `<div class="cofo-status" title="Seattle issued a Certificate of Occupancy for this permit — the city's inspection sign-off that the building is finished and legal to occupy. A stronger completion signal than the permit's own status field.">Occupied · ${bits.join(" · ") || "certificate on file"}</div>`;
 }
 
+// ── Background data-source status ────────────────────────────────────────────
+// Four sources arrive after the grid and decorate it: SDOT street use, land use, certificates
+// of occupancy and trade/electrical permits. Each used to fail in silence — a swallowed
+// catch, an empty index — and the page then made a confident, wrong claim: no badges reads
+// as "no street closures anywhere", and missing certificates put finished buildings back on
+// the Stalled list. On 2026-09-24 SDOT republished its street-use impacts layer empty (HTTP
+// 200, zero records) and the site simply showed no street work, citywide, with nothing to
+// say that the data was missing rather than the work.
+//
+// So each fetch now records whether it worked, and "worked" includes a plausibility floor:
+// an empty answer from a source that normally returns hundreds of rows is treated as
+// unavailable, because that is the failure that actually happened — an error would have
+// been the easy case. Notices appear where the missing data would have appeared (the filter
+// that depends on it, the map control, the permit's own detail view), never as a site-wide
+// banner for a secondary feature. Wording is neutral: from the browser we often can't tell
+// whose fault it is, and the page credits its sources rather than blaming them.
+const SOURCES = {
+  street:   { name: "City street-closure data",       feeds: "street-work badges, the Street work filter and the map layer" },
+  landuse:  { name: "Land-use permit status",         feeds: "why a stuck permit is stuck" },
+  cofo:     { name: "Certificate-of-occupancy data",  feeds: "which buildings are finished and occupied" },
+  activity: { name: "Trade and electrical permit data", feeds: "whether an issued project shows construction activity" },
+};
+// "loading" | "ok" | "unavailable" | "n/a" (Bellevue: these are Seattle datasets)
+const SOURCE_STATE = { street: "loading", landuse: "loading", cofo: "loading", activity: "loading" };
+const SOURCE_REASON = {};
+
+function setSource(key, state, reason = "") {
+  SOURCE_STATE[key] = state;
+  SOURCE_REASON[key] = reason;
+  if (state === "unavailable") console.warn(`${SOURCES[key].name} unavailable: ${reason}`);
+  syncSourceUI();
+}
+// Guarded on the city, not just the state: a city switch renders the grid BEFORE the joins
+// reset these to "n/a", so Seattle's leftover "unavailable" would otherwise paint a stale
+// notice onto Bellevue's first render.
+function sourceDown(key) { return currentCity !== "bellevue" && SOURCE_STATE[key] === "unavailable"; }
+
+// The flag options that depend on a source say so in their own label. Deliberately not
+// disabled: a disabled checkbox that is already ticked (a shared ?street=1 link, say) can't
+// be unticked, which would strand the user on an empty list.
+const SOURCE_FLAGS = { street: "street", activity: "quiet", cofo: "stalled" };
+function syncSourceUI() {
+  for (const [src, flag] of Object.entries(SOURCE_FLAGS)) {
+    const opt = document.querySelector(`#ms-flags input[value="${flag}"]`)?.closest(".ms-option");
+    if (!opt) continue;
+    if (!opt.dataset.baseTitle) opt.dataset.baseTitle = opt.title || "";
+    let tag = opt.querySelector(".src-down");
+    if (sourceDown(src)) {
+      if (!tag) { tag = document.createElement("span"); tag.className = "src-down"; opt.appendChild(tag); }
+      tag.textContent = src === "cofo" ? " · may include finished buildings" : " · data unavailable";
+      opt.title = `${SOURCES[src].name} is unavailable right now, so ${SOURCES[src].feeds} can't be shown. ${opt.dataset.baseTitle}`;
+    } else {
+      tag?.remove();
+      opt.title = opt.dataset.baseTitle;
+    }
+  }
+  if (typeof map !== "undefined" && map) renderMapControls();
+}
+
+// Grid note when the active filters depend on a source that isn't there. Empty results under
+// "Street work" would otherwise read as "no street work", which is the claim we can't make.
+function sourceGridNoteHTML() {
+  const notes = [];
+  if (streetWorkOnly && sourceDown("street"))
+    notes.push("City street-closure data is unavailable right now, so the Street work filter can't match anything.");
+  if (quietOnly && sourceDown("activity"))
+    notes.push("Trade and electrical permit data is unavailable right now, so no project can be judged quiet.");
+  if (stalledOnly && sourceDown("cofo"))
+    notes.push("Certificate-of-occupancy data is unavailable right now, so some finished, occupied buildings may appear as stalled.");
+  return notes.length ? `<div class="source-note">${notes.map(esc).join(" ")}</div>` : "";
+}
+
+// One line in a permit's detail view naming whichever sources that permit would have drawn
+// on and couldn't. Only the relevant ones: land use only matters to a permit with a MUP.
+function sourceModalNoteHTML(p) {
+  if (p._city === "bellevue") return "";
+  const down = [];
+  if (sourceDown("street")) down.push("street closures");
+  if (sourceDown("cofo")) down.push("certificate of occupancy");
+  if (sourceDown("landuse") && p.relatedmup) down.push("land-use status");
+  if (sourceDown("activity") && getStatus(p) === "issued") down.push("trade/electrical activity");
+  return down.length
+    ? `<div class="source-note source-note-modal">Unavailable right now from the City: ${esc(down.join(", "))}. This permit may have details that can't be shown until it's back.</div>`
+    : "";
+}
+
 // ── Construction activity (trade + electrical permits) ───────────────────────
 // A building permit sits on "Issued" for years and never says whether anyone is building.
 // Trade (mechanical/plumbing, c87v-5hwh) and electrical (c4tj-daue) permits are pulled by the
@@ -2364,7 +2460,11 @@ function activityStatusHTML(p) {
 // used to be duplicated verbatim at the two init sites; the Certificate of Occupancy join
 // would have made it three.
 function startBackgroundJoins() {
-  if (currentCity === "bellevue") return;
+  if (currentCity === "bellevue") {
+    // These are Seattle datasets; for Bellevue they don't apply rather than being missing.
+    for (const k of Object.keys(SOURCE_STATE)) setSource(k, "n/a");
+    return;
+  }
   const gen = dataGeneration;
   // Land use only decorates the card and modal, so its repaint can leave the markers alone.
   // Occupancy certificates change getStatus, which colours the cluster rings — hence remap.
@@ -2372,9 +2472,19 @@ function startBackgroundJoins() {
 
   // Land use needs allPermits for its id list, so it can't start alongside the permit fetch.
   const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
+  setSource("landuse", "loading");
   fetchLandUse(mups)
-    .then(idx => { if (gen !== dataGeneration) return; LU_INDEX = idx; settle(false); })
-    .catch(e => console.warn("Land use fetch failed", e));
+    .then(idx => {
+      if (gen !== dataGeneration) return;
+      LU_INDEX = idx;
+      // 98.7% of relatedmup values normally resolve. None resolving out of hundreds asked
+      // is the dataset being empty, not every land-use record having vanished.
+      const got = Object.keys(idx).length;
+      if (mups.length >= 50 && got === 0) setSource("landuse", "unavailable", `0 of ${mups.length} records resolved`);
+      else setSource("landuse", "ok");
+      settle(false);
+    })
+    .catch(e => { if (gen === dataGeneration) setSource("landuse", "unavailable", e.message); });
 
   // Construction activity for the issued projects. Asks about every address in each issued
   // project's SITE, not just the permit's own, since a multi-parcel development can pull its
@@ -2386,17 +2496,40 @@ function startBackgroundJoins() {
     for (const x of SITE_MEMBERS.get(siteKeyOf(p)) || [p]) if (x.originaladdress1) rawAddrs.add(x.originaladdress1);
   }
   activityLoaded = false;
+  setSource("activity", "loading");
   fetchActivity([...rawAddrs])
-    .then(idx => { if (gen !== dataGeneration) return; ACTIVITY = idx; activityLoaded = true; settle(false); })
-    .catch(e => console.warn("Trade/electrical activity fetch failed", e));
+    .then(idx => {
+      if (gen !== dataGeneration) return;
+      // ~250 of ~600 issued-project addresses normally show activity. Zero of hundreds means
+      // the datasets came back empty — and judging "quiet" from an empty index would stamp
+      // every issued project as dormant, so activityLoaded stays false in that case.
+      if (rawAddrs.size >= 100 && idx.size === 0) {
+        setSource("activity", "unavailable", `0 of ${rawAddrs.size} addresses matched`);
+      } else {
+        ACTIVITY = idx; activityLoaded = true;
+        setSource("activity", "ok");
+      }
+      settle(false);
+    })
+    .catch(e => { if (gen === dataGeneration) setSource("activity", "unavailable", e.message); });
 
   // The certificate index is the whole dataset and keyed by permit number, so it doesn't
   // depend on which city is loaded and never goes stale within a session — switching to
   // Bellevue and back shouldn't pay for it twice.
-  if (Object.keys(COFO_INDEX).length) { settle(true); return; }
+  if (Object.keys(COFO_INDEX).length) { setSource("cofo", "ok"); settle(true); return; }
+  setSource("cofo", "loading");
   fetchCofO()
-    .then(idx => { if (gen !== dataGeneration) return; COFO_INDEX = idx; settle(true); })
-    .catch(e => console.warn("Certificate of Occupancy fetch failed", e));
+    .then(idx => {
+      if (gen !== dataGeneration) return;
+      // The dataset is ~5,200 rows. Under 100 is an empty or truncated response; it is not
+      // stored, so the next load retries instead of trusting it for the session.
+      const n = Object.keys(idx).length;
+      if (n < 100) { setSource("cofo", "unavailable", `returned ${n} certificates`); return; }
+      COFO_INDEX = idx;
+      setSource("cofo", "ok");
+      settle(true);
+    })
+    .catch(e => { if (gen === dataGeneration) setSource("cofo", "unavailable", e.message); });
 }
 
 // The MHA-zoning and pending-rezone polygon layers. Started only AFTER the permit fetch has
@@ -2534,10 +2667,19 @@ async function fetchStreetActivity() {
     for (const key of Object.keys(STREET_UPCOMING)) {
       if (STREET_ACTIVITY[key]) delete STREET_UPCOMING[key];
     }
+    // Plausibility floor. Citywide there are normally a few hundred active or upcoming
+    // construction impacts; zero is not a quiet week, it is the 2026-09-24 failure — SDOT
+    // republished the layer empty and answered HTTP 200 with no records.
+    if (currentCity !== "bellevue") {
+      if (features.length < STREET_MIN_FEATURES) setSource("street", "unavailable", `returned ${features.length} records`);
+      else setSource("street", "ok");
+    }
   } catch (e) {
     console.warn("Street activity fetch failed", e);
+    if (currentCity !== "bellevue") setSource("street", "unavailable", e.message);
   }
 }
+const STREET_MIN_FEATURES = 20;
 
 // Lookups for a permit's street activity. SDOT covers Seattle only, so Bellevue permits
 // never match. Active always suppresses upcoming at the same address.
@@ -2650,10 +2792,20 @@ async function fetchStreetWorkGeo() {
       resultRecordCount: "2000",
       f: "json",
     }, 5, STREET_USE_URL, "SDOT Street Use");
-    streetWorkGeo = await dropMisplacedSegments(raw);
+    const segs = await dropMisplacedSegments(raw);
+    if (raw.length < STREET_MIN_FEATURES) {
+      // Same floor as the badges. Not cached: an empty layer used to be stored as `[]`,
+      // which is truthy, so a failed load was never retried for the rest of the session.
+      setSource("street", "unavailable", `map layer returned ${raw.length} records`);
+      streetWorkGeo = null;
+      return [];
+    }
+    streetWorkGeo = segs;
   } catch (e) {
     console.warn("Street work layer fetch failed", e);
-    streetWorkGeo = [];
+    setSource("street", "unavailable", e.message);
+    streetWorkGeo = null;   // retry on the next toggle rather than caching the failure
+    return [];
   } finally {
     streetWorkLoading = false;
   }
@@ -3426,7 +3578,7 @@ function renderGrid(permits) {
     : "";
 
   if (!permits.length) {
-    grid.innerHTML = undatedNote + `<div class="state-msg"><div class="icon">🏙</div>
+    grid.innerHTML = sourceGridNoteHTML() + undatedNote + `<div class="state-msg"><div class="icon">🏙</div>
       <h3>No results</h3><p>Try adjusting your filters.</p></div>`;
     return;
   }
@@ -3448,7 +3600,7 @@ function renderGrid(permits) {
   }
 
   const shown = list.slice(0, gridLimit);
-  grid.innerHTML = banner + undatedNote + shown.map(p => {
+  grid.innerHTML = banner + sourceGridNoteHTML() + undatedNote + shown.map(p => {
     const status     = getStatus(p);
     const use        = getBuildingUse(p);
     const value      = fmtValue(p.estprojectcost);
@@ -3684,6 +3836,7 @@ function openModal(pn) {
       ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
     </div>
     ${timelineHTML(p)}
+    ${sourceModalNoteHTML(p)}
     ${cofoStatusHTML(p)}
     ${activityStatusHTML(p)}
     ${reviewStatsHTML(p)}
@@ -4233,9 +4386,12 @@ const MAP_CONTROLS = [
   {
     id: "streetwork",
     icon: "⚠",
-    title: "Citywide street work",
+    title: () => sourceDown("street")
+      ? "Citywide street work — the City's street-closure data is unavailable right now"
+      : "Citywide street work",
     type: "toggle",
     hidden:   () => currentCity === "bellevue",   // SDOT Street Use is Seattle-only
+    isUnavailable: () => sourceDown("street"),
     isActive: () => streetWorkLayerOn,
     isBusy:   () => streetWorkLoading,
     onToggle: toggleStreetWorkLayer,
@@ -4287,6 +4443,7 @@ function renderMapControls() {
     const cls = [
       c.isActive?.() ? "active" : "",
       c.isBusy?.()   ? "busy"   : "",
+      c.isUnavailable?.() ? "unavailable" : "",
       openControlId === c.id ? "open" : "",
     ].filter(Boolean).join(" ");
     const bubbles = c.type === "options"
@@ -4296,8 +4453,9 @@ function renderMapControls() {
                style="animation-delay:${i * 25}ms">${esc(o.label)}</button>`).join("")
         }</div>`
       : "";
+    const title = typeof c.title === "function" ? c.title() : c.title;
     return `<div class="mc-item">${bubbles}<button class="mc-icon ${cls}" data-ctrl="${c.id}"
-      title="${esc(c.title)}" aria-label="${esc(c.title)}">${c.icon}</button></div>`;
+      title="${esc(title)}" aria-label="${esc(title)}">${c.icon}</button></div>`;
   }).join("");
   mapEl.appendChild(rail);
 

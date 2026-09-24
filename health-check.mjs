@@ -304,6 +304,11 @@ const data = interactive ? await evaluate(`({
   dormant: typeof isDormant==="function" ? allPermits.filter(isDormant).length : 0,
   cofo: typeof hasCofO==="function" ? allPermits.filter(hasCofO).length : 0,
   activity: typeof ACTIVITY!=="undefined" ? ACTIVITY.size : 0,
+  sources: typeof SOURCE_STATE!=="undefined" ? { ...SOURCE_STATE } : null,
+  sourceReasons: typeof SOURCE_REASON!=="undefined" ? { ...SOURCE_REASON } : null,
+  // Does the page actually TELL the user? Read off the Flags option, which is where a user
+  // reaching for street work would look.
+  streetNoticeShown: /unavailable/i.test(document.querySelector('#ms-flags input[value="street"]')?.closest(".ms-option")?.textContent || ""),
   maxSiteAddresses: typeof SITE_ADDRS!=="undefined"
     ? (ensureSiteIndex(), Math.max(0, ...[...SITE_ADDRS.values()].map(a => a.size))) : 0,
   cards: document.querySelectorAll(".card").length,
@@ -373,6 +378,15 @@ if (data) {
   for (const [k, min] of Object.entries(EXPECT))
     if ((data[k] ?? 0) < min) problems.push(`${k} = ${data[k]} (expected >= ${min})`);
   if (data.duplicatePermitNums > 0) problems.push(`${data.duplicatePermitNums} duplicate permit numbers`);
+  // Name any source the app itself judged unavailable, in the app's own terms — clearer at
+  // 7:42am than inferring it from a floor like "streetActivity = 0".
+  for (const [k, st] of Object.entries(data.sources || {}))
+    if (st === "unavailable") problems.push(`${k} source unavailable (${data.sourceReasons?.[k] || "no reason given"})`);
+  // And the point of recording it: when street data is down, the page must say so. Showing
+  // an empty street-work filter with no explanation is the silent wrong answer this exists
+  // to prevent.
+  if (data.sources?.street === "unavailable" && !data.streetNoticeShown)
+    problems.push("street-closure data is unavailable but the page does not tell the user");
   if (data.maxSiteAddresses > MAX_SITE_ADDRESSES)
     problems.push(`one site spans ${data.maxSiteAddresses} addresses (ceiling ${MAX_SITE_ADDRESSES}) — a development id is probably chaining unrelated projects into one card`);
   // Not an EXPECT key: those are floors ("at least N"), and this is a ceiling of zero.
