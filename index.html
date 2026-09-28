@@ -132,6 +132,16 @@
       letter-spacing: 0.5px;
       white-space: nowrap;
     }
+    /* The checkbox rows inside Status / Building Use / Flags are <label>s too, so the rule
+       above was shouting "CHANGED SINCE LAST VISIT" at people. Only the field labels are
+       meant to be small caps. */
+    .controls .ms-option {
+      color: var(--text); font-size: 13px; font-weight: 400;
+      text-transform: none; letter-spacing: normal;
+    }
+
+    /* Phone-only "Filters" button; hidden on wider screens where the row fits. */
+    .filters-toggle { display: none; }
 
     @media (max-width: 640px) {
       .controls {
@@ -163,7 +173,24 @@
       }
       header { flex-direction: column; align-items: flex-start; gap: 12px; }
       .stats { gap: 12px; }
+      /* Nine filters used to be laid out in full, so the first card started 587px down an
+         844px screen and the map showed ~250px before scrolling. They fold behind one button
+         now; search and the view switcher stay out, since those are what people reach for. */
+      .filters-toggle {
+        display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between;
+        background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+        border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer;
+      }
+      .filters-toggle .ft-count { color: var(--accent); font-weight: 600; }
+      .controls:not(.filters-open) > .filter-group { display: none; }
+      #map { height: 72vh; }
     }
+
+    /* Analytics is citywide and says so; only City applies. */
+    .controls.analytics-mode > .filter-group:not(.fg-city),
+    .controls.analytics-mode > #search,
+    .controls.analytics-mode #btn-group,
+    .controls.analytics-mode > .filters-toggle { display: none !important; }
 
     select, input[type="text"] {
       background: var(--surface2);
@@ -347,8 +374,17 @@
       flex-direction: column;
       gap: 10px;
       transition: border-color 0.15s, transform 0.1s;
-      cursor: default;
+      /* Clicking a card opens its details — the timeline, occupancy, construction activity and
+         every permit at the site — but the cursor said otherwise. */
+      cursor: pointer;
     }
+    .card-link.card-details {
+      margin-left: auto; background: none; border: none; padding: 0; cursor: pointer;
+      font: inherit; color: var(--text); font-size: 12px; font-weight: 600;
+    }
+    .card-link.card-details:hover { color: var(--accent); }
+    .mha-badge.mha-inline { display: inline-block; margin: 0; }
+    .grid-hint { grid-column: 1 / -1; font-size: 12px; color: var(--muted); margin: -4px 0 4px; }
 
     .card:hover {
       border-color: var(--accent);
@@ -1060,6 +1096,13 @@
       transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
     .mc-icon:hover { border-color: var(--accent); }
+    .mc-label {
+      pointer-events: auto; cursor: pointer; font: inherit; font-size: 11px; font-weight: 600;
+      color: var(--text); padding: 3px 8px; border-radius: 10px; border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(4px);
+      white-space: nowrap;
+    }
+    .mc-label.active { color: var(--accent); border-color: var(--accent); }
     .mc-icon.active {
       background: var(--accent);
       border-color: var(--accent);
@@ -1267,7 +1310,7 @@
 <header>
   <div class="header-left">
     <h1 id="page-title">Seattle · Large Developments</h1>
-    <p id="header-subtitle">Seattle, WA · Multifamily &amp; Office · $1M+ projects · Live SDCI data</p>
+    <p id="header-subtitle">Seattle, WA · All permits $1M+ · Live SDCI data</p>
   </div>
   <div class="stats">
     <div class="stat"><div class="num" id="stat-total">—</div><div class="label">Projects</div></div>
@@ -1278,7 +1321,10 @@
 </header>
 
 <div class="controls">
-  <div class="filter-group">
+  <button type="button" id="btn-filters" class="filters-toggle" aria-expanded="false" aria-controls="filters">
+    <span>Filters</span><span class="ft-count"></span>
+  </button>
+  <div class="filter-group fg-city">
     <label for="filter-city">City</label>
     <select id="filter-city">
       <option value="seattle">Seattle</option>
@@ -2166,8 +2212,14 @@ let LU_INDEX = {};   // relatedmup → { status, applied, decided, description }
 async function fetchLandUse(mups) {
   const out = {};
   const CHUNK = 400;   // ~12 chars per id keeps each URL well under 8 KB
-  for (let i = 0; i < mups.length; i += CHUNK) {
-    const list = mups.slice(i, i + CHUNK).map(m => `'${String(m).replace(/'/g, "''")}'`).join(",");
+  // The chunks go out together rather than one after another. Serially, each of the ~7
+  // requests paid a full round trip before the next could start: measured 764 ms against
+  // 221 ms concurrent on desktop, and 4,050 ms against 1,150 ms on Fast 3G (2026-09-28) —
+  // which is how long the land-use lines trailed the cards on a phone.
+  const chunks = [];
+  for (let i = 0; i < mups.length; i += CHUNK) chunks.push(mups.slice(i, i + CHUNK));
+  const pages = await Promise.all(chunks.map(async chunk => {
+    const list = chunk.map(m => `'${String(m).replace(/'/g, "''")}'`).join(",");
     const params = new URLSearchParams({
       "$select": "permitnum,statuscurrent,applieddate,decisiondate,description",
       "$where":  `permitnum in (${list})`,
@@ -2176,10 +2228,11 @@ async function fetchLandUse(mups) {
     if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
     const res = await fetch(`${LU_API}?${params}`);
     if (!res.ok) throw new Error(`Land Use HTTP ${res.status}`);
-    for (const r of await res.json()) {
-      out[r.permitnum] = { status: r.statuscurrent || "", applied: r.applieddate || "",
-                           decided: r.decisiondate || "", description: r.description || "" };
-    }
+    return res.json();
+  }));
+  for (const rows of pages) for (const r of rows) {
+    out[r.permitnum] = { status: r.statuscurrent || "", applied: r.applieddate || "",
+                         decided: r.decisiondate || "", description: r.description || "" };
   }
   return out;
 }
@@ -2294,10 +2347,48 @@ const SOURCE_STATE = { street: "loading", landuse: "loading", cofo: "loading", a
 const SOURCE_REASON = {};
 
 function setSource(key, state, reason = "") {
+  const prev = SOURCE_STATE[key];
   SOURCE_STATE[key] = state;
   SOURCE_REASON[key] = reason;
-  if (state === "unavailable") console.warn(`${SOURCES[key].name} unavailable: ${reason}`);
+  if (state === "unavailable" && prev !== "unavailable") console.warn(`${SOURCES[key].name} unavailable: ${reason}`);
   syncSourceUI();
+  // The grid has to be repainted when a source goes down or comes back, or when a filter
+  // that depends on it was waiting for it. Successes happened to repaint through their own
+  // settle(), but failures didn't — so a source that failed a few seconds late left the grid
+  // saying a bare "No results" under a Flags label that correctly said "data unavailable"
+  // (reproduced 2026-09-28 with a trade-permit failure held for 15 s). A quick failure hid
+  // this because some other join usually repainted afterwards.
+  if (prev !== state && (state === "unavailable" || prev === "unavailable" || (prev === "loading" && flagWaitsOn(key))))
+    scheduleSourceRepaint();
+}
+function flagWaitsOn(key) {
+  return (key === "street" && streetWorkOnly) || (key === "activity" && quietOnly)
+      || (key === "cofo" && (quietOnly || stalledOnly));
+}
+let sourceRepaintQueued = false;
+function scheduleSourceRepaint() {
+  if (sourceRepaintQueued) return;
+  sourceRepaintQueued = true;
+  // Deferred a tick so a success's own settle() and this coalesce into one repaint.
+  setTimeout(() => {
+    sourceRepaintQueued = false;
+    if (allPermits && allPermits.length) applyFilters({ preserveView: true });
+  }, 0);
+}
+
+// Street data has two producers — the badge feed and the map layer — and they used to write
+// the same state directly. The map layer only ever wrote "unavailable", never "ok", so one
+// failed layer load kept every street notice on for the rest of the session even after a
+// retry drew 865 segments (reproduced 2026-09-28). Each producer now owns its own part and
+// clears only its own failure; the shared state is derived from both.
+const STREET_PARTS = { badges: "loading", layer: "idle" };
+const STREET_REASONS = {};
+function setStreetPart(part, state, reason = "") {
+  STREET_PARTS[part] = state;
+  STREET_REASONS[part] = reason;
+  const down = Object.keys(STREET_PARTS).find(k => STREET_PARTS[k] === "unavailable");
+  if (down) setSource("street", "unavailable", STREET_REASONS[down]);
+  else setSource("street", STREET_PARTS.badges === "ok" ? "ok" : "loading");
 }
 // Guarded on the city, not just the state: a city switch renders the grid BEFORE the joins
 // reset these to "n/a", so Seattle's leftover "unavailable" would otherwise paint a stale
@@ -2307,16 +2398,20 @@ function sourceDown(key) { return currentCity !== "bellevue" && SOURCE_STATE[key
 // The flag options that depend on a source say so in their own label. Deliberately not
 // disabled: a disabled checkbox that is already ticked (a shared ?street=1 link, say) can't
 // be unticked, which would strand the user on an empty list.
-const SOURCE_FLAGS = { street: "street", activity: "quiet", cofo: "stalled" };
+// Which sources each flag depends on. "quiet" needs certificates as well as trade permits:
+// a certificate is what moves a finished building off "issued", so without them 18 occupied
+// buildings (1600 9th Ave, 920 Olive Way…) were listed as issued-but-quiet with no warning.
+const SOURCE_FLAGS = { street: ["street"], quiet: ["activity", "cofo"], stalled: ["cofo"] };
 function syncSourceUI() {
-  for (const [src, flag] of Object.entries(SOURCE_FLAGS)) {
+  for (const [flag, srcs] of Object.entries(SOURCE_FLAGS)) {
     const opt = document.querySelector(`#ms-flags input[value="${flag}"]`)?.closest(".ms-option");
     if (!opt) continue;
     if (!opt.dataset.baseTitle) opt.dataset.baseTitle = opt.title || "";
     let tag = opt.querySelector(".src-down");
-    if (sourceDown(src)) {
+    const src = srcs.find(sourceDown);
+    if (src) {
       if (!tag) { tag = document.createElement("span"); tag.className = "src-down"; opt.appendChild(tag); }
-      tag.textContent = src === "cofo" ? " · may include finished buildings" : " · data unavailable";
+      tag.textContent = flag === "stalled" ? " · may include finished buildings" : " · data unavailable";
       opt.title = `${SOURCES[src].name} is unavailable right now, so ${SOURCES[src].feeds} can't be shown. ${opt.dataset.baseTitle}`;
     } else {
       tag?.remove();
@@ -2334,9 +2429,21 @@ function sourceGridNoteHTML() {
     notes.push("City street-closure data is unavailable right now, so the Street work filter can't match anything.");
   if (quietOnly && sourceDown("activity"))
     notes.push("Trade and electrical permit data is unavailable right now, so no project can be judged quiet.");
+  else if (quietOnly && sourceDown("cofo"))
+    notes.push("Certificate-of-occupancy data is unavailable right now, so finished buildings can't be ruled out and no project is being judged quiet.");
   if (stalledOnly && sourceDown("cofo"))
     notes.push("Certificate-of-occupancy data is unavailable right now, so some finished, occupied buildings may appear as stalled.");
-  return notes.length ? `<div class="source-note">${notes.map(esc).join(" ")}</div>` : "";
+  if (notes.length) return `<div class="source-note">${notes.map(esc).join(" ")}</div>`;
+  // Still arriving. A deep link like ?quiet=1 used to render "No results" for the second or
+  // two before its data landed — longer on a phone — with nothing to say it was coming.
+  if (currentCity === "bellevue") return "";
+  const waiting = [];
+  if (streetWorkOnly && SOURCE_STATE.street === "loading") waiting.push("street-closure");
+  if (quietOnly && (SOURCE_STATE.activity === "loading" || SOURCE_STATE.cofo === "loading")) waiting.push("trade-permit");
+  else if (stalledOnly && SOURCE_STATE.cofo === "loading") waiting.push("certificate-of-occupancy");
+  return waiting.length
+    ? `<div class="source-note source-loading">Still loading the City's ${esc(waiting.join(" and "))} data — this list fills in when it arrives.</div>`
+    : "";
 }
 
 // One line in a permit's detail view naming whichever sources that permit would have drawn
@@ -2380,28 +2487,33 @@ async function fetchActivity(rawAddrs) {
   const since = new Date(seattleTodayMs() - ACTIVITY_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
   const out = new Map();
   const CHUNK = 250;   // ~27 chars per quoted address keeps each URL under ~7 KB
-  for (const [api, field] of [[TRADE_API, "trade"], [ELEC_API, "elec"]]) {
-    for (let i = 0; i < rawAddrs.length; i += CHUNK) {
-      const list = rawAddrs.slice(i, i + CHUNK).map(a => `'${a.replace(/'/g, "''")}'`).join(",");
-      const params = new URLSearchParams({
-        "$select": "originaladdress1, max(applieddate) AS last, count(*) AS n",
-        "$where":  `originaladdress1 in (${list}) AND applieddate > '${since}'`,
-        "$group":  "originaladdress1",
-        "$limit":  String(CHUNK + 10),
-      });
-      if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
-      const res = await fetch(`${api}?${params}`);
-      if (!res.ok) throw new Error(`${field} permits HTTP ${res.status}`);
-      for (const r of await res.json()) {
-        const k = normalizeAddrStr(r.originaladdress1 || "");
-        if (!k) continue;
-        const e = out.get(k) || { last: "", trade: 0, elec: 0 };
-        const last = (r.last || "").slice(0, 10);
-        if (last > e.last) e.last = last;
-        e[field] += parseInt(r.n, 10) || 0;
-        out.set(k, e);
-      }
-    }
+  // All ~6 requests (two datasets × a few chunks) go out together. One after another they
+  // cost 655 ms against 127 ms on desktop and 3,450 ms against 610 ms on Fast 3G
+  // (2026-09-28), because each paid its own round trip before the next began.
+  const jobs = [];
+  for (const [api, field] of [[TRADE_API, "trade"], [ELEC_API, "elec"]])
+    for (let i = 0; i < rawAddrs.length; i += CHUNK) jobs.push({ api, field, chunk: rawAddrs.slice(i, i + CHUNK) });
+  const pages = await Promise.all(jobs.map(async ({ api, field, chunk }) => {
+    const list = chunk.map(a => `'${a.replace(/'/g, "''")}'`).join(",");
+    const params = new URLSearchParams({
+      "$select": "originaladdress1, max(applieddate) AS last, count(*) AS n",
+      "$where":  `originaladdress1 in (${list}) AND applieddate > '${since}'`,
+      "$group":  "originaladdress1",
+      "$limit":  String(CHUNK + 10),
+    });
+    if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
+    const res = await fetch(`${api}?${params}`);
+    if (!res.ok) throw new Error(`${field} permits HTTP ${res.status}`);
+    return { field, rows: await res.json() };
+  }));
+  for (const { field, rows } of pages) for (const r of rows) {
+    const k = normalizeAddrStr(r.originaladdress1 || "");
+    if (!k) continue;
+    const e = out.get(k) || { last: "", trade: 0, elec: 0 };
+    const last = (r.last || "").slice(0, 10);
+    if (last > e.last) e.last = last;
+    e[field] += parseInt(r.n, 10) || 0;
+    out.set(k, e);
   }
   return out;
 }
@@ -2425,6 +2537,9 @@ function activityFor(p) {
 // permit with activity is by definition not quiet. False whenever it can't be judged.
 function isQuiet(p) {
   if (p._city === "bellevue" || !activityLoaded || getStatus(p) !== "issued") return false;
+  // Not judged until certificates are in: without them a finished, occupied building still
+  // reads "issued", and with no trade permits it looks exactly like a quiet one.
+  if (SOURCE_STATE.cofo !== "ok") return false;
   const iss = permitDateMs(p.issueddate);
   if (!Number.isFinite(iss) || seattleTodayMs() - iss < ACTIVITY_WINDOW_DAYS * 86400000) return false;
   return !activityFor(p);
@@ -2462,6 +2577,9 @@ function activityStatusHTML(p) {
 function startBackgroundJoins() {
   if (currentCity === "bellevue") {
     // These are Seattle datasets; for Bellevue they don't apply rather than being missing.
+    // The street parts reset too, so a map-layer failure from the Seattle session can't
+    // resurface as a stale notice after switching back.
+    STREET_PARTS.badges = "loading"; STREET_PARTS.layer = "idle";
     for (const k of Object.keys(SOURCE_STATE)) setSource(k, "n/a");
     return;
   }
@@ -2671,12 +2789,12 @@ async function fetchStreetActivity() {
     // construction impacts; zero is not a quiet week, it is the 2026-09-24 failure — SDOT
     // republished the layer empty and answered HTTP 200 with no records.
     if (currentCity !== "bellevue") {
-      if (features.length < STREET_MIN_FEATURES) setSource("street", "unavailable", `returned ${features.length} records`);
-      else setSource("street", "ok");
+      if (features.length < STREET_MIN_FEATURES) setStreetPart("badges", "unavailable", `returned ${features.length} records`);
+      else setStreetPart("badges", "ok");
     }
   } catch (e) {
     console.warn("Street activity fetch failed", e);
-    if (currentCity !== "bellevue") setSource("street", "unavailable", e.message);
+    if (currentCity !== "bellevue") setStreetPart("badges", "unavailable", e.message);
   }
 }
 const STREET_MIN_FEATURES = 20;
@@ -2796,14 +2914,15 @@ async function fetchStreetWorkGeo() {
     if (raw.length < STREET_MIN_FEATURES) {
       // Same floor as the badges. Not cached: an empty layer used to be stored as `[]`,
       // which is truthy, so a failed load was never retried for the rest of the session.
-      setSource("street", "unavailable", `map layer returned ${raw.length} records`);
+      setStreetPart("layer", "unavailable", `map layer returned ${raw.length} records`);
       streetWorkGeo = null;
       return [];
     }
     streetWorkGeo = segs;
+    setStreetPart("layer", "ok");
   } catch (e) {
     console.warn("Street work layer fetch failed", e);
-    setSource("street", "unavailable", e.message);
+    setStreetPart("layer", "unavailable", e.message);
     streetWorkGeo = null;   // retry on the next toggle rather than caching the failure
     return [];
   } finally {
@@ -3540,10 +3659,14 @@ function groupSites(permits) {
 function sitePillHTML(p) {
   const more  = p._siteN - 1;
   const addrs = p._siteAddrs ? p._siteAddrs.size : 1;
+  const total = (SITE_MEMBERS.get(p._siteKey) || []).length || p._siteN;
   const label = addrs > 1 ? `+${more} more · ${addrs} addresses` : `+${more} more at this address`;
-  const tip   = addrs > 1
-    ? `One development across ${addrs} addresses, linked by SDCI's development id. Open the card to see all ${p._siteN} permits.`
-    : `Grouped by address. Open the card to see all ${p._siteN} permits here.`;
+  // The count is what matches the current filters; the site can hold more. Said outright,
+  // because with a status filter a card read "see all 2 permits" over a modal listing 4.
+  const scope = total > p._siteN ? ` ${p._siteN} of this site's ${total} permits match your filters.` : "";
+  const tip   = (addrs > 1
+      ? `One development across ${addrs} addresses, linked by SDCI's development id.`
+      : "Grouped by address.") + scope + " Open the card to see them all.";
   return `<span class="site-pill" title="${esc(tip)}">${esc(label)}</span>`;
 }
 
@@ -3600,7 +3723,9 @@ function renderGrid(permits) {
   }
 
   const shown = list.slice(0, gridLimit);
-  grid.innerHTML = banner + sourceGridNoteHTML() + undatedNote + shown.map(p => {
+  const hint = !historyLoaded && currentCity !== "bellevue"
+    ? `<div class="grid-hint">Choose a neighborhood to see each site's full permit history.</div>` : "";
+  grid.innerHTML = banner + sourceGridNoteHTML() + undatedNote + hint + shown.map(p => {
     const status     = getStatus(p);
     const use        = getBuildingUse(p);
     const value      = fmtValue(p.estprojectcost);
@@ -3658,6 +3783,33 @@ function renderGrid(permits) {
 
     const changedFrom = watchChanges[rawNum];
     const cardFlag = streetAct ? " street-flag" : streetUpcoming ? " street-flag-upcoming" : "";
+
+    // The site box only exists when it has something to say. It used to render on all 300
+    // cards as "SITE HISTORY · Select a neighborhood above" around a lone MHA tag — ~100px of
+    // each 343px card repeating one instruction. The instruction is now said once above the
+    // grid, and MHA sits in the tag row with the other classifications.
+    const siteBox = [
+      historyLoaded ? `
+        <div class="sa-row">
+          <span class="sa-label">Site History</span>
+          <span class="sa-val">${historyNote}</span>
+        </div>
+        <div class="sa-row">
+          <span class="sa-label">Last Filed</span>
+          <span class="sa-val">${lastDate}${lastNum
+            ? ` · <a class="sa-permit-link" href="${lastUrl}" target="_blank" rel="noopener">${esc(lastNum)}</a>`
+            : ""}</span>
+        </div>
+        <div class="sa-row">
+          <span class="sa-label">Last Type</span>
+          <span class="sa-val">${lastPT ? `<span class="permit-type-tag ${lastPT.cls}" style="font-size:9px">${esc(lastPT.label)}</span>` : "—"}</span>
+        </div>` : "",
+      rezone ? `<div class="rezone-badge" title="Proposed in the Centers and Corridors legislation transmitted to Council on 28 Jan 2026${rezone.where ? ` · ${esc(rezone.where)}` : ""}. Not yet adopted — may change before any vote.">Rezone proposed · ${rezone.from ? `${esc(rezone.from)} → ` : "→ "}${esc(rezone.to)}</div>` : "",
+      lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : "",
+      stuckBadgesHTML(p, false),
+      luStatusHTML(p),
+      p._siteN > 1 ? sitePillHTML(p) : "",
+    ].filter(Boolean).join("");
     return `<div class="card${cardFlag}" data-pn="${num}">
       <div class="card-header">
         <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
@@ -3674,6 +3826,7 @@ function renderGrid(permits) {
         ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work" title="Shoring/excavation filed ahead of the main construction permit">Site Work</span>` : ""}
         <span class="use-tag ${use}">${useLabel(use)}</span>
         ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
+        ${mha ? `<span class="mha-badge mha-inline" style="background:${mha.bg};color:${mha.color}">${mha.label}</span>` : ""}
       </div>
       <div class="card-desc">${desc}</div>
       ${streetAct ? `<div class="street-line"><svg viewBox="0 0 12 12" fill="none"><path d="M6 1L11 10.5H1L6 1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 4.5V7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="8.7" r="0.6" fill="currentColor"/></svg>${esc(streetAct.text)} <span class="muted">· ${fmtStreetEnds(streetAct.endMs)}</span></div>` : ""}
@@ -3693,29 +3846,7 @@ function renderGrid(permits) {
         </div>
       </div>
 
-      <div class="site-activity">
-        <div class="sa-row">
-          <span class="sa-label">Site History</span>
-          <span class="sa-val">${historyNote}</span>
-        </div>
-        ${historyLoaded ? `
-        <div class="sa-row">
-          <span class="sa-label">Last Filed</span>
-          <span class="sa-val">${lastDate}${lastNum
-            ? ` · <a class="sa-permit-link" href="${lastUrl}" target="_blank" rel="noopener">${esc(lastNum)}</a>`
-            : ""}</span>
-        </div>
-        <div class="sa-row">
-          <span class="sa-label">Last Type</span>
-          <span class="sa-val">${lastPT ? `<span class="permit-type-tag ${lastPT.cls}" style="font-size:9px">${esc(lastPT.label)}</span>` : "—"}</span>
-        </div>` : ""}
-        ${mha ? `<div class="mha-badge" style="background:${mha.bg};color:${mha.color}">${mha.label}</div>` : ""}
-        ${rezone ? `<div class="rezone-badge" title="Proposed in the Centers and Corridors legislation transmitted to Council on 28 Jan 2026${rezone.where ? ` · ${esc(rezone.where)}` : ""}. Not yet adopted — may change before any vote.">Rezone proposed · ${rezone.from ? `${esc(rezone.from)} → ` : "→ "}${esc(rezone.to)}</div>` : ""}
-        ${lapsedMs ? `<div class="lapsed-badge" title="SDCI still lists this permit as issued, but its expiry date has passed and no completion is recorded. The authorization has lapsed unless it was renewed.">Permit lapsed · ${esc(fmtDate(new Date(lapsedMs).toISOString()))}</div>` : ""}
-        ${stuckBadgesHTML(p, false)}
-        ${luStatusHTML(p)}
-        ${p._siteN > 1 ? sitePillHTML(p) : ""}
-      </div>
+      ${siteBox ? `<div class="site-activity">${siteBox}</div>` : ""}
 
       <div class="card-footer">
         <div class="card-links">
@@ -3723,6 +3854,7 @@ function renderGrid(permits) {
           ${mupUrl ? `<a class="card-link dr" href="${mupUrl}" target="_blank" rel="noopener">Design Review ↗</a>` : ""}
           ${sipUrl ? `<a class="card-link sip" href="${sipUrl}" target="_blank" rel="noopener">View Renderings ↗</a>` : ""}
           <a class="card-link maps" href="${mapsUrl}" target="_blank" rel="noopener">Google Maps ↗</a>
+          <button type="button" class="card-link card-details" data-pn="${num}">Details →</button>
         </div>
       </div>
     </div>`;
@@ -3890,9 +4022,16 @@ function closeModal() {
 }
 
 // Card / modal interaction (delegated — cards are re-rendered wholesale)
+document.getElementById("btn-filters").addEventListener("click", function () {
+  const open = document.querySelector(".controls").classList.toggle("filters-open");
+  this.setAttribute("aria-expanded", String(open));
+});
 document.getElementById("grid-view").addEventListener("click", e => {
   const star = e.target.closest(".star-btn");
   if (star) { toggleWatch(star.dataset.pn); return; }
+  // Checked before the generic "ignore buttons" line below, which would otherwise swallow it.
+  const det = e.target.closest(".card-details");
+  if (det) { openModal(det.dataset.pn); return; }
   if (e.target.closest(".visit-banner.is-link")) { toggleChangedFilter(); return; }
   if (e.target.closest("a") || e.target.closest("button")) return;
   const card = e.target.closest(".card[data-pn]");
@@ -4365,6 +4504,7 @@ function toggleRezoneLayer() {
 const MAP_CONTROLS = [
   {
     id: "recent",
+    label: "Recent",
     icon: "◕",
     title: "Recent updates",
     type: "options",
@@ -4385,6 +4525,7 @@ const MAP_CONTROLS = [
   },
   {
     id: "streetwork",
+    label: "Street work",
     icon: "⚠",
     title: () => sourceDown("street")
       ? "Citywide street work — the City's street-closure data is unavailable right now"
@@ -4398,6 +4539,7 @@ const MAP_CONTROLS = [
   },
   {
     id: "zoning",
+    label: "Zoning",
     icon: "▦",
     title: "Zoning",
     type: "toggle",
@@ -4410,6 +4552,7 @@ const MAP_CONTROLS = [
   },
   {
     id: "rezone",
+    label: "Rezone",
     icon: "⇧",
     title: "Proposed rezone (not yet adopted)",
     type: "toggle",
@@ -4421,6 +4564,7 @@ const MAP_CONTROLS = [
   },
   {
     id: "nearme",
+    label: "Near me",
     icon: "◎",
     title: "Near me — what's that construction site I'm standing next to?",
     type: "toggle",
@@ -4454,12 +4598,17 @@ function renderMapControls() {
         }</div>`
       : "";
     const title = typeof c.title === "function" ? c.title() : c.title;
-    return `<div class="mc-item">${bubbles}<button class="mc-icon ${cls}" data-ctrl="${c.id}"
+    // A visible label beside each glyph. ◕ ▦ ⇧ ◎ meant nothing on a phone, where there is no
+    // hover to reveal the tooltip. Hidden while that control's option bubbles are open, since
+    // they occupy the same spot. Clickable, so it doubles the tap target.
+    const label = openControlId === c.id ? ""
+      : `<button class="mc-label${c.isActive?.() ? " active" : ""}" data-ctrl="${c.id}" tabindex="-1" aria-hidden="true">${esc(c.label)}</button>`;
+    return `<div class="mc-item">${bubbles}${label}<button class="mc-icon ${cls}" data-ctrl="${c.id}"
       title="${esc(title)}" aria-label="${esc(title)}">${c.icon}</button></div>`;
   }).join("");
   mapEl.appendChild(rail);
 
-  rail.querySelectorAll(".mc-icon").forEach(btn => btn.addEventListener("click", e => {
+  rail.querySelectorAll(".mc-icon, .mc-label").forEach(btn => btn.addEventListener("click", e => {
     e.stopPropagation();
     const c = MAP_CONTROLS.find(x => x.id === btn.dataset.ctrl);
     if (!c) return;
@@ -5318,7 +5467,16 @@ function renderAnalytics(d) {
   if (u && u.n > 0 && u.total > 0) {
     const pct = Math.round(u.n * 100 / u.total);
     const top = u.top.map(t => `${t.n.toLocaleString()} ${esc(t.status)}`).join(", ");
-    undEl.innerHTML = `<b>${u.n.toLocaleString()} permits (${pct}%) carry no filing date</b> and can't appear in any by-year chart below — ${top}. The charts describe the dated ${100 - pct}%.`;
+    // What the by-year charts actually cover: dated AND inside their window. This used to say
+    // "the charts describe the dated 66%", but every chart starts ten years back, so for $1M+
+    // permits the true share was 40% (2,940 more predate 2017). Counted from the same yearly
+    // series the charts draw, so the two can't disagree.
+    const inWindow = (d.yearly || []).reduce((a, r) => a + (r.permits || 0), 0);
+    const fromYr = d.yearly?.[0]?.year;
+    const coverTxt = inWindow && fromYr
+      ? `The by-year charts cover the ${Math.round(inWindow * 100 / u.total)}% filed since ${fromYr}.`
+      : "";
+    undEl.innerHTML = `<b>${u.n.toLocaleString()} permits (${pct}%) carry no filing date</b> and can't appear in any by-year chart below — ${top}. ${coverTxt}`;
     undEl.title = "SDCI has recorded no application date for these, and every chart here is bucketed by filing year, so there is no year to put them in. The largest group is typically permits sent back for more information — the ones most likely to be stuck — which matters most for the outcomes chart.";
     undEl.hidden = false;
   } else {
@@ -5515,6 +5673,7 @@ function currentState() {
   };
 }
 function syncState() {
+  syncFiltersToggle();
   const s = currentState();
   try { localStorage.setItem("chd-state", JSON.stringify(s)); } catch { /* private browsing */ }
   try {
@@ -5582,6 +5741,26 @@ function restoreFilterState(urlParams, stored) {
 // toggle on during init). Consumed once.
 let pendingLayers = null;
 
+// How many filters are narrowing the list — shown on the phone's collapsed Filters button so
+// a folded-away "Stalled" doesn't silently leave someone looking at 889 projects wondering why.
+function activeFilterCount() {
+  const $ = id => document.getElementById(id);
+  let n = 0;
+  if ($("filter-neighborhood")?.value) n++;
+  if ($("filter-type")?.value) n++;
+  if ($("filter-filed")?.value) n++;
+  if ($("filter-minval")?.value && parseFloat($("filter-minval").value) !== MIN_VALUE) n++;
+  n += (multiSelects["ms-status"]?.get().length ? 1 : 0) + (multiSelects["ms-use"]?.get().length ? 1 : 0);
+  n += FLAGS.filter(([, get]) => get()).length;
+  return n;
+}
+function syncFiltersToggle() {
+  const el = document.querySelector("#btn-filters .ft-count");
+  if (!el) return;
+  const n = activeFilterCount();
+  el.textContent = n ? `${n} active` : "";
+}
+
 function loadStoredState() {
   try { return JSON.parse(localStorage.getItem("chd-state") || "{}") || {}; }
   catch { return {}; }
@@ -5626,6 +5805,7 @@ function setView(v) {
     whenLibsReady(() => setTimeout(() => map && map.invalidateSize(), 100));
   }
   if (v === "analytics") loadAnalytics();
+  document.querySelector(".controls")?.classList.toggle("analytics-mode", v === "analytics");
   syncState();
 }
 
@@ -5983,8 +6163,8 @@ document.getElementById("filter-city").addEventListener("change", async function
     `<div class="state-msg"><div class="spinner"></div><h3>Loading ${cityLabel} permits…</h3></div>`;
   document.getElementById("header-subtitle").textContent =
     currentCity === "bellevue"
-      ? "Bellevue, WA · Major Commercial & Multifamily · Live city data"
-      : "Seattle, WA · Multifamily & Office · $1M+ projects · Live SDCI data";
+      ? "Bellevue, WA · Permits $1M+ and major construction · Live city data"
+      : "Seattle, WA · All permits $1M+ · Live SDCI data";
 
   // Reset map so it re-initializes at the right city center next render
   if (map) { map.remove(); map = null; markers = []; clusterGroup = null; tileLayer = null; youMarker = null; }
@@ -6128,7 +6308,13 @@ document.getElementById("btn-copylink").addEventListener("click", async function
     bar.hidden = entry.isIntersecting || window.innerWidth > 640;
     if (!bar.hidden) sync();
   }, { threshold: 0 }).observe(controls);
-  bar.querySelector("#mini-filters").addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+  // "▲ Filters" on the mini-bar should land you in the filters, not just at the top with
+  // them folded away.
+  bar.querySelector("#mini-filters").addEventListener("click", () => {
+    document.querySelector(".controls")?.classList.add("filters-open");
+    document.getElementById("btn-filters")?.setAttribute("aria-expanded", "true");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
   bar.querySelectorAll(".mini-views button").forEach(b => b.addEventListener("click", () => { setView(b.dataset.view); sync(); }));
 })();
 

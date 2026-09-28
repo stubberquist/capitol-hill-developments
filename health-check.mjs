@@ -292,6 +292,27 @@ if (interactive) {
     if (await evaluate(`(typeof STREET_ACTIVITY!=="undefined" && Object.keys(STREET_ACTIVITY).length>0)`).catch(() => false)) break;
     await new Promise(r => setTimeout(r, 250));
   }
+  // The general rule the three waits above were special cases of: nothing is read until
+  // every background source has finished, one way or the other. Land use had no wait at all
+  // and settled only ~2.5 s before the read on incidental slack; a 503 held for 9 s left it
+  // "loading" at read time and the checker printed CLEAN (demonstrated 2026-09-28). A source
+  // still loading after this wait is now itself a problem, below.
+  for (let i = 0; i < 120; i++) {
+    if (await evaluate(`(typeof SOURCE_STATE!=="undefined" && Object.values(SOURCE_STATE).every(s => s !== "loading"))`).catch(() => false)) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  // The zoning and rezone floors had no wait of their own either — they start after the
+  // permit fetch and were protected only by the map and analytics waits. Both fall back to
+  // [] on failure, so this always terminates and the floors still catch an empty layer.
+  for (let i = 0; i < 80; i++) {
+    if (await evaluate(`(typeof nonMhaZones!=="undefined" && nonMhaZones!==null && typeof pendingRezones!=="undefined" && pendingRezones!==null)`).catch(() => false)) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  // Basemap tiles: non-200 detection skipped any tile still unanswered, and they were only
+  // answered because of the map's 2.5 s sleep. Wait for the responses explicitly; any still
+  // unanswered after this are reported rather than skipped.
+  for (let i = 0; i < 40 && tileReqs.some(t => t.status === null); i++)
+    await new Promise(r => setTimeout(r, 250));
 }
 
 const data = interactive ? await evaluate(`({
@@ -305,6 +326,7 @@ const data = interactive ? await evaluate(`({
   cofo: typeof hasCofO==="function" ? allPermits.filter(hasCofO).length : 0,
   activity: typeof ACTIVITY!=="undefined" ? ACTIVITY.size : 0,
   sources: typeof SOURCE_STATE!=="undefined" ? { ...SOURCE_STATE } : null,
+  sourcesLoading: typeof SOURCE_STATE!=="undefined" ? Object.keys(SOURCE_STATE).filter(k => SOURCE_STATE[k] === "loading") : [],
   sourceReasons: typeof SOURCE_REASON!=="undefined" ? { ...SOURCE_REASON } : null,
   // Does the page actually TELL the user? Read off the Flags option, which is where a user
   // reaching for street work would look.
@@ -312,14 +334,8 @@ const data = interactive ? await evaluate(`({
   maxSiteAddresses: typeof SITE_ADDRS!=="undefined"
     ? (ensureSiteIndex(), Math.max(0, ...[...SITE_ADDRS.values()].map(a => a.size))) : 0,
   cards: document.querySelectorAll(".card").length,
-  // "Changed since your last visit" on a FRESH profile. This check always runs against a
-  // throwaway user-data-dir, so there is no previous visit and the only correct answer is
-  // zero. It is asserted because the honest answer being zero is exactly what made the
-  // 2026-09-14 bug invisible: starring a project rewrote the stored status baseline with
-  // certificate-aware statuses that the next load's pre-join comparison read as changes,
-  // and 124 permits reported as changed with no error anywhere. A non-zero value here means
-  // something is persisting or comparing statuses across a phase boundary again.
-  changedSinceVisit: typeof watchChanges!=="undefined" ? Object.keys(watchChanges).length : 0,
+  // Replaced by the second-visit reading below; the first visit can't see this bug.
+  changedSinceVisit: null,
   sipFetched: typeof SIP_FETCHED!=="undefined" ? SIP_FETCHED : null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,
 })`).catch(() => null) : null;
@@ -327,6 +343,36 @@ const data = interactive ? await evaluate(`({
 // Read the key out of the DEPLOYED page rather than hardcoding it here — one source of
 // truth, and it means this also catches the key being removed or mangled in a refresh.
 const cartoKey = await evaluate(`typeof CARTO_KEY !== "undefined" ? CARTO_KEY : null`).catch(() => null);
+
+// ── Second visit: "changed since your last visit" ────────────────────────────
+// This assertion was added on 2026-09-14 and read on the first load of a brand-new profile,
+// where there is no previous visit, so `watchStatusPrev` is empty and the answer is 0 no
+// matter what the code does. It could never have failed. The bug it was written for only
+// shows on the NEXT visit: the first load writes a status baseline, the second compares
+// against it. So load the page again in the same profile — after the first load's joins have
+// settled (the waits above), since that's when its baseline is final — and assert there.
+// Demonstrated 2026-09-28: re-injecting the original bug reads 0 on the first load and 123 on
+// the second; without the bug the second reads 0, so this doesn't false-alarm.
+let secondVisit = null;
+if (interactive && data) {
+  await cdp.send("Page.navigate", { url: "about:blank" }).catch(() => {});
+  await new Promise(r => setTimeout(r, 300));
+  await cdp.send("Page.navigate", { url: URL_ }).catch(() => {});
+  let ok = false;
+  for (let i = 0; i < 600; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    ok = await evaluate(`(location.href.startsWith("http") && typeof allPermits!=="undefined" && allPermits.length>0 && document.querySelectorAll(".card").length>0)`).catch(() => false);
+    if (ok) break;
+  }
+  if (ok) {
+    for (let i = 0; i < 120; i++) {
+      if (await evaluate(`Object.values(SOURCE_STATE).every(s => s !== "loading")`).catch(() => false)) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
+    secondVisit = await evaluate(`({ changed: Object.keys(watchChanges).length })`).catch(() => null);
+  }
+  data.changedSinceVisit = secondVisit ? secondVisit.changed : null;
+}
 
 cdp.close();
 cleanup();
@@ -389,9 +435,16 @@ if (data) {
     problems.push("street-closure data is unavailable but the page does not tell the user");
   if (data.maxSiteAddresses > MAX_SITE_ADDRESSES)
     problems.push(`one site spans ${data.maxSiteAddresses} addresses (ceiling ${MAX_SITE_ADDRESSES}) — a development id is probably chaining unrelated projects into one card`);
-  // Not an EXPECT key: those are floors ("at least N"), and this is a ceiling of zero.
-  if (data.changedSinceVisit > 0)
-    problems.push(`${data.changedSinceVisit} permits report as "changed since last visit" on a profile that has never visited before — the status baseline is being written and compared at different points in the load`);
+  // Anything still "loading" after the settle wait never finished — neither succeeded nor
+  // failed. That used to pass silently.
+  for (const k of data.sourcesLoading || [])
+    problems.push(`${k} source never settled — still loading when checked`);
+  // Not an EXPECT key: those are floors ("at least N"), and this is a ceiling of zero. Read on
+  // the second visit, a few seconds after the first, when nothing real can have changed.
+  if (data.changedSinceVisit === null)
+    problems.push("second visit could not be completed — changed-since-last-visit is unverified");
+  else if (data.changedSinceVisit > 0)
+    problems.push(`${data.changedSinceVisit} permits report as "changed since last visit" on a second visit seconds after the first — the status baseline is being written and compared at different points in the load`);
 
   // Embedded-data staleness. Absent or unparseable dates are a problem in their own right:
   // the constants are written by the refresh workflow, so a missing one means the bake step
@@ -437,8 +490,10 @@ if (interactive) {
   else {
     const unkeyedReqs = tileReqs.filter(t => !t.url.includes("key="));
     const badStatus = tileReqs.filter(t => t.status !== null && t.status !== 200);
+    const unanswered = tileReqs.filter(t => t.status === null);
     if (unkeyedReqs.length) problems.push(`${unkeyedReqs.length} basemap tile request(s) sent without an API key`);
     if (badStatus.length) problems.push(`${badStatus.length} basemap tile request(s) returned non-200`);
+    if (unanswered.length) problems.push(`${unanswered.length} basemap tile request(s) never answered`);
   }
 }
 
