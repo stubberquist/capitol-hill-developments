@@ -4222,6 +4222,7 @@ function permitPopupBody(p) {
         ${mupUrl ? `<a class="card-link dr" href="${mupUrl}" target="_blank" rel="noopener">Design Review ↗</a>` : ""}
         ${sipUrl ? `<a class="card-link sip" href="${sipUrl}" target="_blank" rel="noopener">View Renderings ↗</a>` : ""}
         <a class="card-link maps" href="${mapsUrl}" target="_blank" rel="noopener">Google Maps ↗</a>
+        <button type="button" class="card-link card-details" data-pn="${num}">Details →</button>
       </div>`;
 }
 
@@ -6357,6 +6358,11 @@ document.getElementById("btn-copylink").addEventListener("click", async function
 // those delegated handlers sees them. stopPropagation keeps the click from reaching the
 // map, which would otherwise close the popup mid-toggle.
 document.getElementById("map").addEventListener("click", e => {
+  // The popup's way into the full detail view. Popups only had outbound links, so from the
+  // map there was no route to the timeline, occupancy, construction activity or the other
+  // permits at the site. stopPropagation for the same reason as the star below.
+  const det = e.target.closest(".card-details");
+  if (det) { e.stopPropagation(); openModal(det.dataset.pn); return; }
   const star = e.target.closest(".star-btn");
   if (!star) return;
   e.stopPropagation();
