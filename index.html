@@ -1103,6 +1103,15 @@
       white-space: nowrap;
     }
     .mc-label.active { color: var(--accent); border-color: var(--accent); }
+    /* The labels exist for touch screens, where there is no hover to reveal a tooltip. They
+       cover the clusters though, so once someone has started using the map they fade — except
+       on a layer that's switched on, where "Zoning" beside a lit button explains why the map
+       is coloured. On a mouse device the tooltip does the job, so only active labels show. */
+    .mc-label { transition: opacity 0.4s ease; }
+    #map.labels-faded .mc-label:not(.active) { opacity: 0; pointer-events: none; }
+    @media (hover: hover) and (pointer: fine) {
+      .mc-label:not(.active) { display: none; }
+    }
     .mc-icon.active {
       background: var(--accent);
       border-color: var(--accent);
@@ -4576,6 +4585,30 @@ const MAP_CONTROLS = [
 
 let openControlId = null;   // id of the control whose bubbles are showing, if any
 
+// Fade the rail labels once someone has found their way around the map: the first pan, zoom
+// or tap — or after 10 s if they only look. Tapping a button brings them back for a moment,
+// so they're never gone for good. Per visit on purpose (nothing stored): a returning user
+// who has forgotten what ◕ means still gets reminded.
+let mapLabelTimer = null;
+let mapLabelsArmed = false;
+function fadeMapLabels(delay = 0) {
+  clearTimeout(mapLabelTimer);
+  mapLabelTimer = setTimeout(() => document.getElementById("map")?.classList.add("labels-faded"), delay);
+}
+function showMapLabelsBriefly() {
+  document.getElementById("map")?.classList.remove("labels-faded");
+  fadeMapLabels(3000);
+}
+function armMapLabelFade(mapEl) {
+  if (mapLabelsArmed) return;
+  mapLabelsArmed = true;
+  // Taps on the rail are handled by the buttons themselves (they re-show, then fade).
+  const onUse = e => { if (!e.target.closest("#map-ctrls")) fadeMapLabels(); };
+  mapEl.addEventListener("pointerdown", onUse);
+  mapEl.addEventListener("wheel", onUse, { passive: true });
+  fadeMapLabels(10000);
+}
+
 function renderMapControls() {
   const mapEl = document.getElementById("map");
   if (!mapEl) return;
@@ -4607,9 +4640,11 @@ function renderMapControls() {
       title="${esc(title)}" aria-label="${esc(title)}">${c.icon}</button></div>`;
   }).join("");
   mapEl.appendChild(rail);
+  armMapLabelFade(mapEl);
 
   rail.querySelectorAll(".mc-icon, .mc-label").forEach(btn => btn.addEventListener("click", e => {
     e.stopPropagation();
+    showMapLabelsBriefly();
     const c = MAP_CONTROLS.find(x => x.id === btn.dataset.ctrl);
     if (!c) return;
     if (c.type === "toggle") { openControlId = null; c.onToggle(); return; }
