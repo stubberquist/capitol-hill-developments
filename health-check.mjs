@@ -16,6 +16,15 @@
 //   0  clean
 //   1  the SITE has a problem — investigate the app
 //   2  the CHECK could not run — investigate the checker, the site is unknown
+//   3  UPSTREAM only — a City data source is down at the source, confirmed by querying it
+//      directly, and the site is handling it. Nothing to fix here; still worth knowing.
+//
+// Exit 3 exists because SDOT published its street-use layer empty from 2026-10-02 for days,
+// and every morning exited 1 for an outage nobody here could fix. While that lasted, a
+// second, real failure would have changed nothing about the exit code — it would only have
+// added a line to a list that was already red. A source only counts as upstream when the
+// direct query agrees; if the City's API answers fine and the page still calls it
+// unavailable, that is the site's bug and stays exit 1.
 //
 //   node health-check.mjs [url]
 //
@@ -87,6 +96,35 @@ const EXPECT_ANALYTICS = { charts: 8 };
 // trigger) the embedded index would quietly freeze while this reported CLEAN indefinitely.
 // 10 days gives the weekly refresh a missed run plus slack before it complains.
 const MAX_DATA_AGE_DAYS = 10;
+
+// Direct queries to each optional source, used only when the page reports it unavailable or
+// unsettled. `match` attributes console errors and failed requests to the source.
+const socrataCount = id => `https://data.seattle.gov/resource/${id}.json?$select=count(*)%20as%20n`;
+const UPSTREAM = {
+  street:   { match: ["SU_Permit_Data_Model_Relationships"], floorKey: "streetActivity",
+              urls: ["https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/SU_Permit_Data_Model_Relationships/FeatureServer/2/query?where=1%3D1&returnCountOnly=true&f=json"] },
+  landuse:  { match: ["ht3q-kdvx"], urls: [socrataCount("ht3q-kdvx")] },
+  cofo:     { match: ["axkr-2p68"], floorKey: "cofo", urls: [socrataCount("axkr-2p68")] },
+  activity: { match: ["c87v-5hwh", "c4tj-daue"], floorKey: "activity",
+              urls: [socrataCount("c87v-5hwh"), socrataCount("c4tj-daue")] },
+};
+// Resolves to a reason string when the source itself is down, or null when it answers with
+// records. Empty counts as down: that is the failure SDOT actually had.
+async function upstreamDown(key) {
+  for (const url of UPSTREAM[key].urls) {
+    const host = new URL(url).host;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return `HTTP ${r.status} from ${host}`;
+      const j = await r.json();
+      if (j.error) return `ArcGIS error ${j.error.code ?? ""} ${j.error.message ?? ""}`.trim();
+      const n = Number(j.count ?? j[0]?.n);
+      if (!Number.isFinite(n)) return `unreadable count from ${host}`;
+      if (n === 0) return `${url.includes("arcgis") ? "SDOT street-use layer" : url.match(/resource\/([\w-]+)/)[1]} has 0 records`;
+    } catch (e) { return `${host} did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
+  }
+  return null;
+}
 
 // Everything that needs tearing down, whatever way we exit.
 let chrome = null;
@@ -196,6 +234,7 @@ await cdp.send("Log.enable");
 await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
 
 const consoleErrors = [], exceptions = [], netFailures = [];
+const reqUrls = new Map();
 // Basemap tiles are watched separately from everything else because they fail in a way
 // nothing else here can see. In Aug 2026 CARTO began requiring an API key and started
 // serving unauthenticated requests a real 200 OK PNG with "API KEY REQUIRED" watermarked
@@ -205,11 +244,13 @@ const consoleErrors = [], exceptions = [], netFailures = [];
 const tileReqs = [];
 cdp.on(m => {
   const p = m.params;
-  if (m.method === "Log.entryAdded" && p.entry.level === "error") consoleErrors.push(p.entry.text);
+  if (m.method === "Log.entryAdded" && p.entry.level === "error")
+    consoleErrors.push(p.entry.url && !p.entry.text.includes(p.entry.url) ? `${p.entry.text} (${p.entry.url})` : p.entry.text);
+  if (m.method === "Network.requestWillBeSent") reqUrls.set(p.requestId, p.request.url);
   if (m.method === "Runtime.exceptionThrown")
     exceptions.push(p.exceptionDetails.exception?.description || p.exceptionDetails.text);
   if (m.method === "Network.loadingFailed")
-    netFailures.push(`${p.type}: ${p.errorText || p.blockedReason || "failed"}`);
+    netFailures.push(`${p.type}: ${p.errorText || p.blockedReason || "failed"} — ${reqUrls.get(p.requestId) || "unknown url"}`);
   if (m.method === "Network.requestWillBeSent" && p.request.url.includes("basemaps.cartocdn.com"))
     tileReqs.push({ url: p.request.url, id: p.requestId, status: null });
   if (m.method === "Network.responseReceived" && p.response.url.includes("basemaps.cartocdn.com")) {
@@ -297,7 +338,9 @@ if (interactive) {
   // and settled only ~2.5 s before the read on incidental slack; a 503 held for 9 s left it
   // "loading" at read time and the checker printed CLEAN (demonstrated 2026-09-28). A source
   // still loading after this wait is now itself a problem, below.
-  for (let i = 0; i < 120; i++) {
+  // 40 s, longer than the page's own 30 s background-fetch timeout (BG_FETCH_TIMEOUT_MS), so
+  // a hung source is read as the "unavailable" the page turns it into, not raced against it.
+  for (let i = 0; i < 160; i++) {
     if (await evaluate(`(typeof SOURCE_STATE!=="undefined" && Object.values(SOURCE_STATE).every(s => s !== "loading"))`).catch(() => false)) break;
     await new Promise(r => setTimeout(r, 250));
   }
@@ -365,7 +408,7 @@ if (interactive && data) {
     if (ok) break;
   }
   if (ok) {
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < 160; i++) {
       if (await evaluate(`Object.values(SOURCE_STATE).every(s => s !== "loading")`).catch(() => false)) break;
       await new Promise(r => setTimeout(r, 250));
     }
@@ -497,9 +540,32 @@ if (interactive) {
   }
 }
 
-if (uniq(consoleErrors).length) problems.push(`${uniq(consoleErrors).length} console error(s)`);
+// Which of the page's unavailable or unsettled sources are down at the source itself?
+const upstream = {};   // key -> reason
+for (const k of Object.keys(UPSTREAM)) {
+  const st = data?.sources?.[k];
+  if (st !== "unavailable" && !(data?.sourcesLoading || []).includes(k)) continue;
+  const why = await upstreamDown(k);
+  if (why) upstream[k] = why;
+}
+const fromUpstream = s => Object.keys(upstream).some(k => UPSTREAM[k].match.some(m => s.includes(m)));
+const siteConsole = uniq(consoleErrors).filter(s => !fromUpstream(s));
+const siteNet = uniq(netFailures).filter(s => !fromUpstream(s));
+if (siteConsole.length) problems.push(`${siteConsole.length} console error(s)`);
 if (uniq(exceptions).length) problems.push(`${uniq(exceptions).length} uncaught exception(s)`);
-if (uniq(netFailures).length) problems.push(`${uniq(netFailures).length} failed request(s)`);
+if (siteNet.length) problems.push(`${siteNet.length} failed request(s)`);
+
+// Move the problems a confirmed upstream outage fully explains out of `problems`. Only the
+// source's own status line and its own floor qualify; "the page does not tell the user" and
+// everything else stay site problems whatever the City is doing.
+const upstreamProblems = [];
+for (const [k, why] of Object.entries(upstream)) {
+  const own = [`${k} source unavailable`, `${k} source never settled`];
+  if (UPSTREAM[k].floorKey) own.push(`${UPSTREAM[k].floorKey} = `);
+  for (let i = problems.length - 1; i >= 0; i--)
+    if (own.some(o => problems[i].startsWith(o)))
+      upstreamProblems.unshift(`${problems.splice(i, 1)[0]} — confirmed upstream: ${why}`);
+}
 
 console.log(JSON.stringify({
   url: URL_,
@@ -512,6 +578,7 @@ console.log(JSON.stringify({
   uncaughtExceptions: uniq(exceptions).slice(0, 10),
   networkFailures: uniq(netFailures).slice(0, 10),
   problems,
+  upstream: upstreamProblems,
 }, null, 1));
 
 clearTimeout(watchdog);
@@ -520,5 +587,8 @@ clearTimeout(watchdog);
 // checker did its job and found the site wanting. Exit 2 is reserved for cases where we
 // never got far enough to have an opinion at all: Chrome wouldn't start, CDP timed out, the
 // watchdog fired. Those are handled above, before any site assertion runs.
-if (problems.length) { console.log(`\nATTENTION — ${problems.length} problem(s):\n  ` + problems.join("\n  ")); process.exit(1); }
+if (upstreamProblems.length)
+  console.log(`\nUPSTREAM — ${upstreamProblems.length} City data problem(s), confirmed at the source:\n  ` + upstreamProblems.join("\n  "));
+if (problems.length) { console.log(`\nATTENTION — ${problems.length} site problem(s):\n  ` + problems.join("\n  ")); process.exit(1); }
+if (upstreamProblems.length) { console.log("\nSite otherwise CLEAN."); process.exit(3); }
 console.log("\nCLEAN — no console errors, no exceptions, no failed requests, all data sources populated.");

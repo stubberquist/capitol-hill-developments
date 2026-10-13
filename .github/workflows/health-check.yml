@@ -1,0 +1,66 @@
+name: Daily health check
+
+# The daily check used to run only as a cron job inside an interactive Claude session, which
+# dies with the session and went missing at least twice. This is the durable copy: same
+# script, GitHub's scheduler, and a failure opens (or updates) an issue, which emails.
+#
+# Exit codes (see health-check.mjs): 0 clean · 1 site problem · 2 checker could not run ·
+# 3 a City data source is down at the source and the site is handling it. Only 1 fails.
+
+on:
+  schedule:
+    # 14:42 UTC = 07:42 PDT / 06:42 PST. After SDOT's nightly publish (~11:25-11:40 UTC), so an
+    # empty republish is caught the same morning. Off the hour: GitHub delays :00 schedules most.
+    - cron: '42 14 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: daily-health-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      # Pinned to the same SHA as refresh-sip.yml.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+
+      - name: Health-check the live site
+        id: check
+        run: |
+          MAJOR=$(node -p "process.versions.node.split('.')[0]")
+          if [ "$MAJOR" -lt 22 ]; then echo "::warning::Runner has Node $MAJOR, health-check needs 22+ — skipping"; exit 0; fi
+          CHROME_BIN=$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || true)
+          if [ -z "$CHROME_BIN" ]; then echo "::warning::No Chrome on the runner — skipping"; exit 0; fi
+          set +e
+          CHROME_PATH="$CHROME_BIN" node health-check.mjs | tee result.txt
+          CODE=${PIPESTATUS[0]}
+          set -e
+          case "$CODE" in
+            0) echo "::notice::Live site healthy" ;;
+            2) echo "::warning::Health check could not run (exit 2) — site status unknown" ;;
+            3) echo "::warning::A City data source is down upstream (exit 3) — the site is handling it" ;;
+            *) echo "::error::Live site has a problem (exit $CODE)"; exit 1 ;;
+          esac
+
+      # One open issue per incident: a problem that lasts a week adds comments to the same
+      # issue rather than opening seven.
+      - name: Open or update issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PROBLEMS=$(sed -n '/^ATTENTION/,$p' result.txt 2>/dev/null | head -20)
+          BODY=$(printf 'The daily health check found a problem on the live site.\n\n```\n%s\n```\n\nLogs: %s\n' "${PROBLEMS:-see logs}" "$RUN")
+          OPEN=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "Daily health check failed in:title" --json number -q '.[0].number' || true)
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --repo "$GITHUB_REPOSITORY" --body "$BODY" || true
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Daily health check failed — $(date +%Y-%m-%d)" --body "$BODY" || true
+          fi

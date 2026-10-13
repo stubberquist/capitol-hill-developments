@@ -182,7 +182,9 @@
         border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer;
       }
       .filters-toggle .ft-count { color: var(--accent); font-weight: 600; }
-      .controls:not(.filters-open) > .filter-group { display: none; }
+      /* Not in Analytics: it hides the Filters button, so City — the one filter that
+         applies there — would be folded away with no way to unfold it. */
+      .controls:not(.filters-open):not(.analytics-mode) > .filter-group { display: none; }
       #map { height: 72vh; }
     }
 
@@ -1329,7 +1331,7 @@
   </div>
 </header>
 
-<div class="controls">
+<div class="controls" id="filters">
   <button type="button" id="btn-filters" class="filters-toggle" aria-expanded="false" aria-controls="filters">
     <span>Filters</span><span class="ft-count"></span>
   </button>
@@ -1851,6 +1853,7 @@ function syncCityOnlyButtons() {
     if (opt) opt.hidden = !supported;
   }
   syncFlagUI();
+  syncFiltersToggle();
 }
 
 // ISO strings compare lexically, so string > string works for "is after"
@@ -1981,12 +1984,30 @@ async function fetchPermits() {
 // ArcGIS layers silently cap every response at 2,000 rows (maxRecordCount), so any query
 // that can match more must paginate with resultOffset until exceededTransferLimit clears.
 // Used for both the Bellevue permit layer and SDOT's Street Use layer.
-async function arcFetchAll(params, maxPages = 5, baseUrl = BELLEVUE_API, label = "Bellevue") {
+//
+// Background sources (street, land use, certificates, trade/electrical) go through bgFetch.
+// They had no timeout, so a City API that accepted the request and never answered left
+// "Still loading…" on screen indefinitely — reproduced 2026-10-12 by holding SDOT's response:
+// still loading at 90 s, no cards, no notice. A timeout turns a hang into "unavailable",
+// which already has its notices. 30 s is ~3x the slowest real answer measured (SDOT, 9.2 s
+// on a cold result cache). The primary permit load is deliberately left without one: there
+// is nothing to fall back to, and its own spinner is the honest state.
+const BG_FETCH_TIMEOUT_MS = 30000;
+async function bgFetch(url, init = {}) {
+  if (typeof AbortSignal === "undefined" || !AbortSignal.timeout) return fetch(url, init);
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(BG_FETCH_TIMEOUT_MS) });
+  } catch (e) {
+    if (e.name === "TimeoutError") throw new Error(`no answer after ${BG_FETCH_TIMEOUT_MS / 1000} s`);
+    throw e;
+  }
+}
+async function arcFetchAll(params, maxPages = 5, baseUrl = BELLEVUE_API, label = "Bellevue", background = false) {
   const features = [];
   for (let page = 0; page < maxPages; page++) {
     const p = new URLSearchParams(params);
     p.set("resultOffset", String(features.length));
-    const res = await fetch(`${baseUrl}?${p}`);
+    const res = await (background ? bgFetch : fetch)(`${baseUrl}?${p}`);
     if (!res.ok) throw new Error(`${label} API HTTP ${res.status}`);
     const data = await res.json();
     if (data.error) throw new Error(data.error.message || `${label} query failed`);
@@ -2235,7 +2256,7 @@ async function fetchLandUse(mups) {
       "$limit":  String(CHUNK + 50),
     });
     if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
-    const res = await fetch(`${LU_API}?${params}`);
+    const res = await bgFetch(`${LU_API}?${params}`);
     if (!res.ok) throw new Error(`Land Use HTTP ${res.status}`);
     return res.json();
   }));
@@ -2294,7 +2315,7 @@ async function fetchCofO() {
     "$limit":  "20000",
   });
   if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
-  const res = await fetch(`${COFO_API}?${params}`);
+  const res = await bgFetch(`${COFO_API}?${params}`);
   if (!res.ok) throw new Error(`CofO HTTP ${res.status}`);
   const out = {};
   for (const r of await res.json()) {
@@ -2375,12 +2396,17 @@ function flagWaitsOn(key) {
       || (key === "cofo" && (quietOnly || stalledOnly));
 }
 let sourceRepaintQueued = false;
+let filterRuns = 0;   // bumped by applyFilters
 function scheduleSourceRepaint() {
   if (sourceRepaintQueued) return;
   sourceRepaintQueued = true;
-  // Deferred a tick so a success's own settle() and this coalesce into one repaint.
+  // Deferred a tick, and skipped if anything repainted in the meantime: a success's own
+  // settle() repaints right after setSource, and running this as well rebuilt the grid twice
+  // within a few ms (3-4 back-to-back rebuilds on a ?quiet=1&stalled=1 load, 2026-10-05).
+  const at = filterRuns;
   setTimeout(() => {
     sourceRepaintQueued = false;
+    if (filterRuns !== at) return;
     if (allPermits && allPermits.length) applyFilters({ preserveView: true });
   }, 0);
 }
@@ -2448,8 +2474,8 @@ function sourceGridNoteHTML() {
   if (currentCity === "bellevue") return "";
   const waiting = [];
   if (streetWorkOnly && SOURCE_STATE.street === "loading") waiting.push("street-closure");
-  if (quietOnly && (SOURCE_STATE.activity === "loading" || SOURCE_STATE.cofo === "loading")) waiting.push("trade-permit");
-  else if (stalledOnly && SOURCE_STATE.cofo === "loading") waiting.push("certificate-of-occupancy");
+  if (quietOnly && SOURCE_STATE.activity === "loading") waiting.push("trade-permit");
+  if ((quietOnly || stalledOnly) && SOURCE_STATE.cofo === "loading") waiting.push("certificate-of-occupancy");
   return waiting.length
     ? `<div class="source-note source-loading">Still loading the City's ${esc(waiting.join(" and "))} data — this list fills in when it arrives.</div>`
     : "";
@@ -2511,7 +2537,7 @@ async function fetchActivity(rawAddrs) {
       "$limit":  String(CHUNK + 10),
     });
     if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
-    const res = await fetch(`${api}?${params}`);
+    const res = await bgFetch(`${api}?${params}`);
     if (!res.ok) throw new Error(`${field} permits HTTP ${res.status}`);
     return { field, rows: await res.json() };
   }));
@@ -2771,7 +2797,7 @@ async function fetchStreetActivity() {
       returnGeometry: "false",
       resultRecordCount: "2000",
       f: "json",
-    }, 5, STREET_USE_URL, "SDOT Street Use");
+    }, 5, STREET_USE_URL, "SDOT Street Use", true);
     for (const f of features) {
       const a = f.attributes;
       const key = normalizeAddrStr(a.ADDRESS);
@@ -2866,7 +2892,7 @@ async function dropMisplacedSegments(features) {
   try {
     for (let i = 0; i < nums.length; i += 300) {
       const list = nums.slice(i, i + 300).map(n => `'${String(n).replace(/'/g, "''")}'`).join(",");
-      const res = await fetch(STREET_USE_POINT_URL, {
+      const res = await bgFetch(STREET_USE_POINT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -2918,7 +2944,7 @@ async function fetchStreetWorkGeo() {
       outSR: "4326",
       resultRecordCount: "2000",
       f: "json",
-    }, 5, STREET_USE_URL, "SDOT Street Use");
+    }, 5, STREET_USE_URL, "SDOT Street Use", true);
     const segs = await dropMisplacedSegments(raw);
     if (raw.length < STREET_MIN_FEATURES) {
       // Same floor as the badges. Not cached: an empty layer used to be stored as `[]`,
@@ -3433,6 +3459,7 @@ function getSortedList() {
 }
 
 function applyFilters({ preserveView = false, remap = false } = {}) {
+  filterRuns++;
   const nbF  = document.getElementById("filter-neighborhood").value;
   const list = getSortedList();
 
@@ -3732,7 +3759,7 @@ function renderGrid(permits) {
   }
 
   const shown = list.slice(0, gridLimit);
-  const hint = !historyLoaded && currentCity !== "bellevue"
+  const hint = !historyLoaded
     ? `<div class="grid-hint">Choose a neighborhood to see each site's full permit history.</div>` : "";
   grid.innerHTML = banner + sourceGridNoteHTML() + undatedNote + hint + shown.map(p => {
     const status     = getStatus(p);
@@ -3930,6 +3957,8 @@ function timelineHTML(p) {
   }).join("") + `</div>`;
 }
 
+let modalReturnFocus = null;   // whatever opened the dialog gets focus back on close
+let modalReturnPn = null;      // ...or, if the grid was rebuilt meanwhile, that permit's new button
 function openModal(pn) {
   const p = allPermits.find(x => (x.permitnum || "") === pn);
   if (!p) return;
@@ -4004,7 +4033,11 @@ function openModal(pn) {
       <a class="card-link maps" href="${mapsUrl}" target="_blank" rel="noopener">Google Maps ↗</a>
       ${hasLoc ? `<a class="card-link" href="#" id="modal-show-map">Show on Map</a>` : ""}
     </div>`;
-  document.getElementById("modal-backdrop").classList.add("open");
+  const backdrop = document.getElementById("modal-backdrop");
+  if (!backdrop.classList.contains("open")) { modalReturnFocus = document.activeElement; modalReturnPn = pn; }
+  backdrop.classList.add("open");
+  // Focus moves into the dialog, or a keyboard user's next Tab lands behind it.
+  backdrop.querySelector(".modal-close")?.focus();
 
   const showMap = document.getElementById("modal-show-map");
   if (showMap) showMap.addEventListener("click", e => {
@@ -4027,7 +4060,17 @@ function openModal(pn) {
 }
 
 function closeModal() {
-  document.getElementById("modal-backdrop").classList.remove("open");
+  const backdrop = document.getElementById("modal-backdrop");
+  if (!backdrop.classList.contains("open")) return;   // Escape fires this on every page
+  backdrop.classList.remove("open");
+  // A background source landing while the dialog is open rebuilds the grid, which replaces
+  // the button that opened it — focus then fell to <body> (2026-10-12, trade permits held
+  // 4 s). Fall back to the same permit's button in the new grid.
+  let target = modalReturnFocus?.isConnected ? modalReturnFocus : null;
+  if (!target && modalReturnPn)
+    target = document.querySelector(`#grid-view .card-details[data-pn="${CSS.escape(modalReturnPn)}"]`);
+  target?.focus();
+  modalReturnFocus = modalReturnPn = null;
 }
 
 // Card / modal interaction (delegated — cards are re-rendered wholesale)
