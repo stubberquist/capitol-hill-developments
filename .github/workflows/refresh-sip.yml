@@ -2,17 +2,21 @@ name: Refresh Embedded Data (SIP index + market data + pending rezones)
 
 on:
   schedule:
-    # Monday 05:00 UTC = Sunday 22:00 PT. Deliberately AHEAD of the weekly review, which runs
-    # at 00:27 PT (07:27 UTC) Monday. It used to run at 14:00 UTC, six and a half hours AFTER
-    # the review, which meant the review always profiled the previous week's baked constants,
-    # a broken refresh had a full week before the review would notice, and any follow-up work
-    # from the review collided with the refresh push mid-session (it did, on 2026-08-24, and
-    # needed a rebase). GitHub's scheduler runs this job 27-57 minutes late in practice, so
-    # 05:00 still leaves ~1.5h of clearance before the review starts.
-    - cron: '0 5 * * 1'
+    # Sunday 20:17 UTC = Sunday 13:17 PDT. Deliberately AHEAD of the weekly review, which runs
+    # at 00:27 PT (07:27 UTC) Monday. Running after the review means the review profiles the
+    # previous week's baked constants, a broken refresh gets a week's head start, and the
+    # review's follow-up work collides with the refresh push mid-session (it did on
+    # 2026-08-24 and needed a rebase).
+    #
+    # It was '0 5 * * 1' on the belief that GitHub ran it under an hour late. It actually ran
+    # 5-8 hours late every week from 2026-09-07 to 10-12 (09:57 → 12:46 UTC, getting later),
+    # so it always landed AFTER the review. Top-of-hour schedules are the most delayed; the
+    # daily check's :42 schedule ran 3-6 h late. 20:17 Sunday leaves ~11 h of clearance even
+    # at the worst delay seen.
+    - cron: '17 20 * * 0'
   workflow_dispatch:       # Allow manual trigger from GitHub UI
 
-# A manual run overlapping the Monday cron would have both jobs commit and push the same
+# A manual run overlapping the weekly cron would have both jobs commit and push the same
 # branch — the loser fails on a non-fast-forward. Queue them instead of cancelling, so a
 # manual run never silently discards the scheduled refresh's work.
 concurrency:
@@ -27,9 +31,12 @@ jobs:
       issues: write
 
     steps:
-      # Pinned to a SHA, not the mutable v4 tag: this job holds contents:write and pushes
-      # straight to the live site, so a retagged v4 would run unreviewed code with that token.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      # Pinned to a SHA, not the mutable tag: this job holds contents:write and pushes
+      # straight to the live site, so a retagged release would run unreviewed code with that
+      # token. v7.0.1 runs on Node 24; v4.4.0 ran on Node 20 and drew a deprecation warning on
+      # every run. Credentials still persist for the plain `git push` below (v6 moved them to
+      # a separate config file, included automatically).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Fetch and embed SIP index
         run: bash refresh-sip-index.sh
@@ -39,7 +46,7 @@ jobs:
 
       # Recomputed rather than pinned, so the index self-corrects as Council adopts pieces
       # of the rezone: an ordinance that passes lands in the live zoning layer, and those
-      # polygons drop out of "pending" on the next Monday without anyone touching the code.
+      # polygons drop out of "pending" on the next weekly refresh without anyone touching the code.
       - name: Recompute pending-rezone index
         run: bash refresh-rezone-index.sh
 

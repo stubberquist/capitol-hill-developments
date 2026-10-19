@@ -90,7 +90,7 @@ const EXPECT_MAP = { markers: 1000, sites: 1000 };
 const EXPECT_ANALYTICS = { charts: 8 };
 
 // How stale the embedded data may get before it counts as a failure. SIP_FETCHED and
-// REZONE_FETCHED are baked in by the Monday workflow and were read off the live page every
+// REZONE_FETCHED are baked in by the weekly refresh workflow and were read off the live page every
 // morning without ever being checked against the clock — so if the schedule stopped firing
 // (GitHub disables workflows after ~60 days of repo inactivity, or a YAML edit breaks the
 // trigger) the embedded index would quietly freeze while this reported CLEAN indefinitely.

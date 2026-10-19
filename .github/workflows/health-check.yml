@@ -28,7 +28,7 @@ jobs:
 
     steps:
       # Pinned to the same SHA as refresh-sip.yml.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Health-check the live site
         id: check
@@ -40,6 +40,15 @@ jobs:
           set +e
           CHROME_PATH="$CHROME_BIN" node health-check.mjs | tee result.txt
           CODE=${PIPESTATUS[0]}
+          # Exit 2 is the checker failing to run, usually a runner glitch. On 2026-10-15 Chrome
+          # never reported a debugging port, and that run — the one day SDOT was down — saw
+          # nothing. Such glitches rarely repeat back to back, so try once more.
+          if [ "$CODE" -eq 2 ]; then
+            echo "::notice::Checker could not run (exit 2) — retrying once in 30 s"
+            sleep 30
+            CHROME_PATH="$CHROME_BIN" node health-check.mjs | tee result.txt
+            CODE=${PIPESTATUS[0]}
+          fi
           set -e
           case "$CODE" in
             0) echo "::notice::Live site healthy" ;;
