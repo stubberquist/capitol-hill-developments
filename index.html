@@ -220,6 +220,21 @@
       #map { height: 72vh; }
     }
 
+    /* Short touch screens — a phone on its side, or the iPhone Duo's inner screen in landscape
+       (~890x626 CSS px) — are wide enough for the desktop toolbar, which then wraps to three
+       rows of filters: the first card started at 312px of a 626px screen (measured
+       2026-10-26). Fold the filters there too and keep the rest of the desktop layout.
+       Touch-only, so a short laptop window keeps its full toolbar. */
+    @media (pointer: coarse) and (min-width: 641px) and (max-width: 1024px) and (max-height: 700px) {
+      .filters-toggle {
+        display: inline-flex; align-items: center; gap: 10px;
+        background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+        border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+      }
+      .filters-toggle .ft-count { color: var(--accent); font-weight: 600; }
+      .controls:not(.filters-open):not(.analytics-mode) > .filter-group { display: none; }
+    }
+
     /* Analytics is citywide and says so; only City applies. */
     .controls.analytics-mode > .filter-group:not(.fg-city),
     .controls.analytics-mode > #search,
