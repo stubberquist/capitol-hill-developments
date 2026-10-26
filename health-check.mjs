@@ -59,6 +59,10 @@ const EXPECT = {
   // on it. Stalled now has three independent signals and sits in the hundreds; a floor of
   // 10 catches it collapsing without tripping on ordinary week-to-week drift.
   stalled: 10,
+  // ...and that is exactly how the second blanking (2026-10-25) got past it: with three
+  // signals, losing the lapsed one took Stalled from 898 to 722, nowhere near 10. So the
+  // lapsed signal gets its own floor. It sat at 177+ before; 20 is a collapse detector.
+  lapsed: 20,
   dormant: 10,
   // Certificates of occupancy. This join is what stops 52 finished, occupied buildings from
   // showing up on the Stalled list, and it is a separate dataset that can go the way
@@ -107,6 +111,10 @@ const UPSTREAM = {
   cofo:     { match: ["axkr-2p68"], floorKey: "cofo", urls: [socrataCount("axkr-2p68")] },
   activity: { match: ["c87v-5hwh", "c4tj-daue"], floorKey: "activity",
               urls: [socrataCount("c87v-5hwh"), socrataCount("c4tj-daue")] },
+  // Not a separate source: a column of the permits dataset that SDCI has twice published
+  // empty for every row. Probed only when the lapsed floor fails.
+  expiry:   { match: [], floorKey: "lapsed", empty: "SDCI's expiresdate column is empty for every permit",
+              urls: [`${socrataCount("76t5-zqzr")}&$where=expiresdate%20IS%20NOT%20NULL`] },
 };
 // Resolves to a reason string when the source itself is down, or null when it answers with
 // records. Empty counts as down: that is the failure SDOT actually had.
@@ -120,7 +128,8 @@ async function upstreamDown(key) {
       if (j.error) return `ArcGIS error ${j.error.code ?? ""} ${j.error.message ?? ""}`.trim();
       const n = Number(j.count ?? j[0]?.n);
       if (!Number.isFinite(n)) return `unreadable count from ${host}`;
-      if (n === 0) return `${url.includes("arcgis") ? "SDOT street-use layer" : url.match(/resource\/([\w-]+)/)[1]} has 0 records`;
+      if (n === 0) return UPSTREAM[key].empty ||
+        `${url.includes("arcgis") ? "SDOT street-use layer" : url.match(/resource\/([\w-]+)/)[1]} has 0 records`;
     } catch (e) { return `${host} did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
   }
   return null;
@@ -365,6 +374,7 @@ const data = interactive ? await evaluate(`({
   pendingRezones: (typeof pendingRezones!=="undefined" && pendingRezones) ? pendingRezones.length : 0,
   streetActivity: typeof STREET_ACTIVITY!=="undefined" ? Object.keys(STREET_ACTIVITY).length : 0,
   stalled: typeof isStalled==="function" ? allPermits.filter(isStalled).length : 0,
+  lapsed: typeof permitLapsed==="function" ? allPermits.filter(p => permitLapsed(p)).length : 0,
   dormant: typeof isDormant==="function" ? allPermits.filter(isDormant).length : 0,
   cofo: typeof hasCofO==="function" ? allPermits.filter(hasCofO).length : 0,
   activity: typeof ACTIVITY!=="undefined" ? ACTIVITY.size : 0,
@@ -544,7 +554,12 @@ if (interactive) {
 const upstream = {};   // key -> reason
 for (const k of Object.keys(UPSTREAM)) {
   const st = data?.sources?.[k];
-  if (st !== "unavailable" && !(data?.sourcesLoading || []).includes(k)) continue;
+  // Probe when the page says the source is down or unsettled — or when its count fell
+  // below its floor while the page called it fine, which is what an emptied column looks
+  // like (the request succeeds; the field it needed is blank).
+  const fk = UPSTREAM[k].floorKey;
+  const belowFloor = !!(data && fk && fk in EXPECT && (data[fk] ?? 0) < EXPECT[fk]);
+  if (st !== "unavailable" && !(data?.sourcesLoading || []).includes(k) && !belowFloor) continue;
   const why = await upstreamDown(k);
   if (why) upstream[k] = why;
 }

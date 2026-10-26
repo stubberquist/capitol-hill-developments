@@ -2041,6 +2041,22 @@ const PERMIT_FIELDS = [
   "relatedmup", "contractorcompanyname", "development_site",
 ].join(",");
 
+// The primary permit load gets one retry. It has nothing to fall back to, so a single
+// dropped connection blanked the whole page: on 2026-10-26, the morning after SDCI rewrote
+// the dataset, Socrata reset the connection on page 3 of 3 and the page never loaded (the
+// next two loads were fine). Retried only on a network error or a 5xx/429 — a 4xx is a bad
+// query and asking again won't fix it.
+async function fetchRetry(url, init) {
+  try {
+    const res = await fetch(url, init);
+    if (res.status < 500 && res.status !== 429) return res;
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+  }
+  await new Promise(r => setTimeout(r, 1500));
+  return fetch(url, init);
+}
+
 async function fetchPermits() {
   const pageSize = 5000;
   const maxPages = 10;
@@ -2064,7 +2080,7 @@ async function fetchPermits() {
       "$where": `estprojectcost >= ${MIN_VALUE} AND latitude IS NOT NULL`
     });
     if (APP_TOKEN) params.set("$$app_token", APP_TOKEN);
-    const res = await fetch(`${API}?${params}`);
+    const res = await fetchRetry(`${API}?${params}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };
@@ -2111,7 +2127,7 @@ async function arcFetchAll(params, maxPages = 5, baseUrl = BELLEVUE_API, label =
   for (let page = 0; page < maxPages; page++) {
     const p = new URLSearchParams(params);
     p.set("resultOffset", String(features.length));
-    const res = await (background ? bgFetch : fetch)(`${baseUrl}?${p}`);
+    const res = await (background ? bgFetch : fetchRetry)(`${baseUrl}?${p}`);
     if (!res.ok) throw new Error(`${label} API HTTP ${res.status}`);
     const data = await res.json();
     if (data.error) throw new Error(data.error.message || `${label} query failed`);
@@ -2534,6 +2550,19 @@ function setStreetPart(part, state, reason = "") {
 // notice onto Bellevue's first render.
 function sourceDown(key) { return currentCity !== "bellevue" && SOURCE_STATE[key] === "unavailable"; }
 
+// Not a source that fails to load but a column that comes back empty. SDCI has published
+// expiresdate blank for every row twice — 2026-09-01 and 2026-10-25 (0 of 193,894) — and
+// each time Stalled quietly lost its "lapsed" signal: 898 → 722 projects in October, the
+// "Permit lapsed" badges gone, nothing on screen to say the list was now incomplete.
+// Memoised on the permit array, which is replaced (never mutated) on every load.
+let expiryMemo = { arr: null, missing: false };
+function expiryMissing() {
+  if (currentCity === "bellevue" || !allPermits || !allPermits.length) return false;
+  if (expiryMemo.arr !== allPermits)
+    expiryMemo = { arr: allPermits, missing: !allPermits.some(p => p._city !== "bellevue" && p.expiresdate) };
+  return expiryMemo.missing;
+}
+
 // The flag options that depend on a source say so in their own label. Deliberately not
 // disabled: a disabled checkbox that is already ticked (a shared ?street=1 link, say) can't
 // be unticked, which would strand the user on an empty list.
@@ -2552,6 +2581,10 @@ function syncSourceUI() {
       if (!tag) { tag = document.createElement("span"); tag.className = "src-down"; opt.appendChild(tag); }
       tag.textContent = flag === "stalled" ? " · may include finished buildings" : " · data unavailable";
       opt.title = `${SOURCES[src].name} is unavailable right now, so ${SOURCES[src].feeds} can't be shown. ${opt.dataset.baseTitle}`;
+    } else if (flag === "stalled" && expiryMissing()) {
+      if (!tag) { tag = document.createElement("span"); tag.className = "src-down"; opt.appendChild(tag); }
+      tag.textContent = " · lapsed permits not flagged";
+      opt.title = `SDCI isn't publishing permit expiry dates right now, so permits that have lapsed can't be identified. Stalled shows only permits issued 5+ years ago and reviews idle 2+ years. ${opt.dataset.baseTitle}`;
     } else {
       tag?.remove();
       opt.title = opt.dataset.baseTitle;
@@ -2572,6 +2605,8 @@ function sourceGridNoteHTML() {
     notes.push("Certificate-of-occupancy data is unavailable right now, so finished buildings can't be ruled out and no project is being judged quiet.");
   if (stalledOnly && sourceDown("cofo"))
     notes.push("Certificate-of-occupancy data is unavailable right now, so some finished, occupied buildings may appear as stalled.");
+  if (stalledOnly && expiryMissing())
+    notes.push("SDCI isn't publishing permit expiry dates right now, so lapsed permits can't be flagged — this list shows only permits issued 5+ years ago and reviews idle 2+ years.");
   if (notes.length) return `<div class="source-note">${notes.map(esc).join(" ")}</div>`;
   // Still arriving. A deep link like ?quiet=1 used to render "No results" for the second or
   // two before its data landed — longer on a phone — with nothing to say it was coming.
