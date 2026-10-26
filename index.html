@@ -1191,6 +1191,10 @@
       pointer-events: none;
     }
     .mc-item { display: flex; align-items: center; gap: 6px; }
+    #map-ctrls, #map-legend { transition: opacity 0.15s ease; }
+    #map.popup-open #map-ctrls,
+    #map.popup-open #map-legend,
+    #map.popup-open .leaflet-control-zoom { opacity: 0; visibility: hidden; pointer-events: none; }
 
     .mc-icon {
       width: 34px;
@@ -1426,6 +1430,14 @@
       color: var(--text);
     }
     .leaflet-popup-content { margin: 0; }
+    /* A popup wider than the map can't be panned into view. Permit cards are bound at
+       300-360px and want the full 360, but a phone's map is ~340px, so the card's right edge
+       ("Details") and top ran off the map. max-width beats the width Leaflet sets inline,
+       and Leaflet measures the capped box when it positions and autopans. Done in CSS
+       because re-laying the popup out from popupopen stopped a pan mid-animation and threw
+       inside markercluster. */
+    #map { container-type: inline-size; }
+    #map .leaflet-popup-content { max-width: calc(100cqw - 24px); }
     .leaflet-popup-tip { background: var(--surface); }
     .leaflet-popup-close-button { color: var(--muted) !important; top: 10px !important; right: 10px !important; }
   </style>
@@ -5057,6 +5069,12 @@ function renderMap(permits) {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19
     }).addTo(map);
+    // The control rail and legend step aside while a permit's card is open. On a phone the
+    // rail sat over the card's right edge (status badge, star, links) and the legend over its
+    // foot; they come back when the card closes. popupclose fires before the next popupopen,
+    // so moving from one marker to another never flashes the controls back.
+    map.on("popupopen",  () => map.getContainer().classList.add("popup-open"));
+    map.on("popupclose", () => map.getContainer().classList.remove("popup-open"));
 
     // Overlays a deep link asked for. Deferred a tick so this renderMap finishes building
     // its markers and controls first; each toggle ends with refreshMapChrome, so the rail
