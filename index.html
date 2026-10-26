@@ -343,7 +343,10 @@
        former filter buttons and two utility buttons that used to sit in this row alongside
        them made the primary navigation impossible to pick out of ten identical pills. */
     .seg { display: flex; gap: 0; }
-    .seg button { border-radius: 0; margin-left: -1px; }
+    /* .view-toggle .seg, not .seg: `.view-toggle button { border-radius: 6px }` below has the
+       same specificity and comes later, so it won and rounded the middle button (Map) on all
+       four corners — a pill wedged between its neighbours, with notches at both seams. */
+    .view-toggle .seg button { border-radius: 0; margin-left: -1px; }
     .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
     .seg button:last-child  { border-radius: 0 6px 6px 0; }
     .seg button.active { position: relative; z-index: 1; }
