@@ -198,6 +198,13 @@
            is five controls now, but it still wraps — a phone can't hold them side by side. */
         flex-wrap: wrap;
       }
+      /* Left to wrap on its own, the row broke after the switcher and stranded ⋯ alone on a
+         second line. Switcher and ⋯ share the first row now, the switcher stretching to fill
+         it, and Group by site sits centred on the second. */
+      .view-toggle .seg { order: 1; flex: 1; }
+      .view-toggle .seg button { flex: 1; padding: 6px 8px; }
+      .view-toggle .menu-group { order: 2; }
+      .view-toggle .group-toggle { order: 3; }
       header { flex-direction: column; align-items: flex-start; gap: 12px; }
       /* Four numbers on one row. At 22px they wrapped and left "$186.79B" alone on a second
          line, so the header took ~160px of an 844px screen. */
