@@ -169,6 +169,10 @@
 
     /* Phone-only "Filters" button; hidden on wider screens where the row fits. */
     .filters-toggle { display: none; }
+    /* A chevron that turns, so the button says whether the panel is open. */
+    .filters-toggle .ft-count { margin-left: auto; }
+    .filters-toggle::after { content: "▾"; margin-left: 8px; font-size: 16px; line-height: 1; color: var(--muted); transition: transform 0.15s; }
+    .filters-toggle[aria-expanded="true"]::after { transform: rotate(180deg); }
 
     @media (max-width: 640px) {
       .controls {
@@ -189,7 +193,10 @@
         width: 100%;
         box-sizing: border-box;
       }
-      .view-toggle {
+      /* .controls .view-toggle, not .view-toggle: the base rule further down sets margin-left:
+         auto at equal specificity and won, so whenever the row didn't fill — Analytics hides
+         Group by site — the switcher shrank to the right and "Analytics" wrapped. */
+      .controls .view-toggle {
         grid-column: 1 / -1;
         margin-left: 0;
         justify-content: center;
@@ -202,7 +209,7 @@
          second line. Switcher and ⋯ share the first row now, the switcher stretching to fill
          it, and Group by site sits centred on the second. */
       .view-toggle .seg { order: 1; flex: 1; }
-      .view-toggle .seg button { flex: 1; padding: 6px 8px; }
+      .view-toggle .seg button { flex: 1; padding: 6px 8px; white-space: nowrap; }
       .view-toggle .menu-group { order: 2; }
       .view-toggle .group-toggle { order: 3; }
       header { flex-direction: column; align-items: flex-start; gap: 12px; }
@@ -339,6 +346,8 @@
       border: 1px solid var(--border);
     }
 
+    #search { flex: 1 1 200px; max-width: 420px; }
+
     .view-toggle {
       margin-left: auto;
       display: flex;
@@ -415,7 +424,7 @@
 
     /* ── Map ── */
     #map-view { display: none; }
-    #map { position: relative; z-index: 0; height: 600px; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
+    #map { position: relative; z-index: 0; height: max(500px, calc(100vh - 230px)); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }
 
     /* ── Grid ── */
     #grid-view {
@@ -885,6 +894,8 @@
     }
 
     .card-footer {
+      /* Pinned to the bottom, so every link row in a grid row lines up however tall the card above it. */
+      margin-top: auto;
       border-top: 1px solid var(--border);
       padding-top: 10px;
       display: flex;
@@ -1070,9 +1081,12 @@
     .related-permits { margin-top: 16px; }
     .related-permits h4 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
     .related-permits .rp-row {
-      display: flex; justify-content: space-between; gap: 10px;
+      display: flex; align-items: center; gap: 10px;
       font-size: 12px; padding: 6px 0; border-top: 1px solid var(--border);
     }
+    .related-permits .rp-desc { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .related-permits .rp-row .badge { font-size: 10px; padding: 1px 7px; }
+    .related-permits .rp-row span:last-child { margin-left: auto; }
     .related-permits .rp-row span:last-child { color: var(--muted); white-space: nowrap; }
     /* Scrolls instead of truncating: the list is the proof of the card's "+N more", so it
        has to be able to show all N — the largest site is 48 permits. */
@@ -1080,9 +1094,9 @@
     .related-permits .rp-addr { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* On a phone a multi-address row can't fit number, address, type and date: the address
        truncated to "862…". In a development spanning addresses, which address is the point;
-       the permit type is the thing that can go. */
+       the status is the thing that can go. */
     @media (max-width: 640px) {
-      .related-permits .rp-type-optional { display: none; }
+      .related-permits .rp-addr ~ .badge { display: none; }
     }
 
 
@@ -1282,6 +1296,8 @@
        panel also blocked taps. Slim both down and let the map size to the viewport. */
     @media (max-width: 640px) {
       #map { height: 65vh; min-height: 400px; }
+      /* The map started ~300px down; the four header numbers are the cheapest height to give back. */
+      body.view-map header .stats { display: none; }
 
       #map-legend {
         padding: 8px 10px;
@@ -1424,7 +1440,16 @@
     .an-chart-card .chart-wrap { position: relative; height: 260px; }
     .an-src { font-size: 10px; color: var(--muted); margin-top: 8px; text-align: right; }
     .an-desc { font-size: 11px; color: var(--muted); line-height: 1.45; margin: -8px 0 12px; }
-    .an-stat .desc { font-size: 11px; color: var(--muted); line-height: 1.45; margin-top: 6px; opacity: 0.85; }
+    /* Clamped: the longest explainer ran eight lines and stretched all six boxes to match. Tap expands. */
+    .an-stat .desc { font-size: 11px; color: var(--muted); line-height: 1.45; margin-top: 6px; opacity: 0.85;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer; }
+    .an-stat .desc.open { -webkit-line-clamp: unset; }
+    @media (max-width: 640px) {
+      .an-stats { grid-template-columns: 1fr 1fr; gap: 10px; }
+      .an-stat { padding: 12px; }
+      .an-stat .num { font-size: 20px; }
+      .an-stat .delta { margin-left: 4px; }
+    }
     .an-stat .warn { font-size: 11px; color: var(--yellow); line-height: 1.45; margin-top: 6px; }
 
     /* ── Leaflet popup dark theme ── */
@@ -1608,9 +1633,9 @@
 <div id="mini-bar" hidden>
   <button id="mini-filters" title="Back to filters">▲ Filters</button>
   <span class="mini-views">
-    <button data-view="grid" title="Cards">⊞</button>
-    <button data-view="map" title="Map">⊕</button>
-    <button data-view="analytics" title="Analytics">∿</button>
+    <button data-view="grid">Cards</button>
+    <button data-view="map">Map</button>
+    <button data-view="analytics">Analytics</button>
   </span>
 </div>
 
@@ -4046,9 +4071,9 @@ function renderGrid(permits) {
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:-4px">
         <span class="permit-type-tag ${ptLabel.cls}">${esc(ptLabel.label)}</span>
         ${isSiteWorkPermit(p) ? `<span class="permit-type-tag site-work" title="Shoring/excavation filed ahead of the main construction permit">Site Work</span>` : ""}
-        <span class="use-tag ${use}">${useLabel(use)}</span>
+        ${use !== "other" ? `<span class="use-tag ${use}">${useLabel(use)}</span>` : ""}
         ${units ? `<span style="font-size:11px;color:var(--muted)">${units} units</span>` : ""}
-        ${mha ? `<span class="mha-badge mha-inline mha-${mhaKey}">${mha.label}</span>` : ""}
+        ${mha && mhaKey !== "not-subject" ? `<span class="mha-badge mha-inline mha-${mhaKey}">${mha.label}</span>` : ""}
       </div>
       <div class="card-desc">${desc}</div>
       ${streetAct ? `<div class="street-line"><svg viewBox="0 0 12 12" fill="none"><path d="M6 1L11 10.5H1L6 1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 4.5V7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="6" cy="8.7" r="0.6" fill="currentColor"/></svg>${esc(streetAct.text)} <span class="muted">· ${fmtStreetEnds(streetAct.endMs)}</span></div>` : ""}
@@ -4184,7 +4209,7 @@ function openModal(pn) {
     <h2>${esc(rawAddr)}</h2>
     <div class="modal-sub">
       <a class="permit-num" href="${detailUrl}" target="_blank" rel="noopener">${num}</a>
-      &nbsp;<span class="badge ${status}">${statusLabel(status)}</span>
+      &nbsp;<span class="badge ${status}" title="SDCI status: ${esc(p.statuscurrent || "—")}">${statusLabel(status)}</span>
       <button class="star-btn${isWatched(p) ? " starred" : ""}" data-pn="${num}">${isWatched(p) ? "★" : "☆"}</button>
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -4203,14 +4228,14 @@ function openModal(pn) {
     <div class="card-meta">
       <div class="meta-item"><span class="meta-key">Est. Value</span><span class="meta-val" style="color:var(--accent);font-weight:700">${fmtValue(p.estprojectcost)}</span></div>
       <div class="meta-item"><span class="meta-key">City</span><span class="meta-val">${cityStr}</span></div>
-      <div class="meta-item"><span class="meta-key">Status</span><span class="meta-val">${esc(p.statuscurrent || "—")}</span></div>
     </div>
     ${related.length ? `<div class="related-permits">
       <h4>${esc(relatedHeading)}</h4>
       <div class="rp-list">${related.map(r => `<div class="rp-row rp-link" data-pn="${esc(r.permitnum || "")}" role="button" tabindex="0" title="Open this permit">
         <span style="font-family:monospace">${esc(r.permitnum || "—")}</span>
-        ${multiAddr ? `<span class="rp-addr">${esc(r.originaladdress1 || "—")}</span>` : ""}
-        <span class="rp-type${multiAddr ? " rp-type-optional" : ""}">${esc(getPermitTypeLabel(r).label)}</span>
+        ${multiAddr ? `<span class="rp-addr">${esc(r.originaladdress1 || "—")}</span>`
+                    : `<span class="rp-desc" title="${esc(r.description || "")}">${esc(r.description || getPermitTypeLabel(r).label)}</span>`}
+        <span class="badge ${getStatus(r)}">${statusLabel(getStatus(r))}</span>
         <span>${fmtDate(r.issueddate || r.applieddate)}</span>
       </div>`).join("")}</div>
     </div>` : ""}
@@ -4266,6 +4291,7 @@ document.getElementById("btn-filters").addEventListener("click", function () {
   const open = document.querySelector(".controls").classList.toggle("filters-open");
   this.setAttribute("aria-expanded", String(open));
 });
+document.getElementById("an-stats").addEventListener("click", e => e.target.closest(".desc")?.classList.toggle("open"));
 document.getElementById("grid-view").addEventListener("click", e => {
   if (e.target.closest(".empty-clear")) { clearAllFilters(); return; }
   if (e.target.closest(".hint-dismiss")) {
@@ -5642,10 +5668,15 @@ async function fetchBellevueAnalytics(largeOnly) {
   };
 }
 
-function styleDataset(type, { label, data, color = "#6c8ef5", fill = false, dash, yAxisID }) {
+function styleDataset(type, { label, data, color = "#6c8ef5", fill = false, dash, yAxisID }, partial) {
+  const last = data.length - 1;
   return {
     label, data, type, yAxisID,
-    backgroundColor: type === "bar" ? color + "BF" : (fill ? color + "22" : "transparent"),
+    // A partial final year is drawn faint (bars) or dashed (lines): at full strength ten months
+    // of 2026 read as a collapse next to twelve of 2025.
+    backgroundColor: type === "bar" ? (partial ? data.map((_, i) => color + (i === last ? "55" : "BF")) : color + "BF")
+                                    : (fill ? color + "22" : "transparent"),
+    segment: partial && type === "line" ? { borderDash: c => c.p1DataIndex === last ? [4, 4] : dash } : undefined,
     borderColor: color,
     borderWidth: type === "bar" ? 0 : 2,
     borderDash: dash,
@@ -5665,12 +5696,17 @@ function makeChart(id, type, labels, data, opts = {}) {
   const { color = "#6c8ef5", money = false, fill = false, legend = false, datasets, fmt, zero = true,
           stacked = false, horizontal = false, max, y1 = null } = opts;
   const tickFmt = fmt || (money ? fmtValue : null);
+  const partial = !horizontal && String(labels[labels.length - 1]) === String(new Date().getFullYear());
   const ds = datasets
-    ? datasets.map(d => styleDataset(d.type || type, d))
-    : [styleDataset(type, { data, color, fill })];
+    ? datasets.map(d => styleDataset(d.type || type, d, partial))
+    : [styleDataset(type, { data, color, fill }, partial)];
   if (anCharts[id]) anCharts[id].destroy();
-  const valueAxis = { beginAtZero: zero, stacked, max, ticks: tickFmt ? { callback: v => tickFmt(v) } : {} };
-  const labelAxis = { grid: { display: false }, stacked };
+  // fmtValue renders 0 as "—" (right for a missing value, wrong for an axis origin).
+  const valueAxis = { beginAtZero: zero, stacked, max, ticks: tickFmt ? { callback: v => money && !v ? "$0" : tickFmt(v) } : {} };
+  // Year labels stay horizontal everywhere; some charts rotated them 45° and some didn't.
+  const labelAxis = { grid: { display: false }, stacked,
+    ticks: { maxRotation: 0, autoSkipPadding: 2, font: { size: 11 },
+             callback(v, i) { const l = this.getLabelForValue(v); return partial && i === labels.length - 1 ? [l, "YTD"] : l; } } };
   anCharts[id] = new Chart(document.getElementById(id), {
     type,
     data: { labels, datasets: ds },
@@ -5684,6 +5720,7 @@ function makeChart(id, type, labels, data, opts = {}) {
           backgroundColor: "#22263a", borderColor: "#2e3350", borderWidth: 1,
           titleColor: "#e2e8f0", bodyColor: "#e2e8f0", padding: 10, displayColors: false,
           callbacks: {
+            title: items => items[0] && (items[0].label + (partial && items[0].dataIndex === labels.length - 1 ? " (year to date)" : "")),
             label: ctx => {
               const v = horizontal ? ctx.parsed.x : ctx.parsed.y;
               const f = (y1 && ctx.dataset.yAxisID === "y1") ? y1.fmt : tickFmt;
@@ -5696,7 +5733,7 @@ function makeChart(id, type, labels, data, opts = {}) {
         x: horizontal ? valueAxis : labelAxis,
         y: horizontal ? labelAxis : valueAxis,
         ...(y1 ? { y1: { position: "right", grid: { drawOnChartArea: false },
-                         ticks: y1.fmt ? { callback: v => y1.fmt(v) } : {} } } : {}),
+                         ticks: { stepSize: y1.step, callback: v => y1.fmt ? y1.fmt(v) : v } } } : {}),
       },
     },
   });
@@ -5772,7 +5809,7 @@ function renderAnalytics(d) {
       <div class="label">${c.label}</div>
       <div><span class="num">${c.fmt(c.cur)}</span>${badge}</div>
       <div class="vs">${c.note}</div>
-      ${c.desc ? `<div class="desc">${c.desc}</div>` : ""}
+      ${c.desc ? `<div class="desc" title="${esc(c.desc)}">${c.desc}</div>` : ""}
       ${c.warn ? `<div class="warn">⚠ ${c.warn}</div>` : ""}
     </div>`;
   }).join("");
@@ -5798,7 +5835,7 @@ function renderAnalytics(d) {
       { label: "Applicant (corrections)",  data: d.review.map(r => r.applicant), color: "#fb923c" },
       { label: "Review rounds",            data: d.review.map(r => r.rounds),    color: "#34d399", type: "line", yAxisID: "y1" },
     ],
-    y1: { fmt: v => `${v} rounds` },
+    y1: { step: 1, fmt: v => `${v} round${v === 1 ? "" : "s"}` },
   });
 
   const cpu = (d.cpuYearly || []).filter(r => r.units > 0 && r.value > 0);
@@ -6170,6 +6207,7 @@ function setView(v) {
   // The header's Projects / Total value describe the filtered cards. Above citywide charts
   // they read as the charts' own totals — "18 projects" over "5,195 permits filed YTD".
   document.body.classList.toggle("view-analytics", v === "analytics");
+  document.body.classList.toggle("view-map", v === "map");
   syncState();
 }
 
@@ -6466,7 +6504,7 @@ async function init() {
     try { localStorage.setItem("chd-last-visit", new Date().toISOString()); } catch {}
     const cityLabel = currentCity === "bellevue" ? "Bellevue" : "Seattle";
     document.getElementById("last-updated").textContent =
-      `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
+      `${cityLabel} · ${allPermits.length.toLocaleString()} permits loaded · select a neighborhood for site history`;
   } catch (err) {
     document.getElementById("grid-view").innerHTML = `
       <div class="state-msg">
@@ -6577,7 +6615,7 @@ document.getElementById("filter-city").addEventListener("change", async function
     startLayerFetches();
     startBackgroundJoins();
     document.getElementById("last-updated").textContent =
-      `${cityLabel} · ${allPermits.length} permits loaded · select a neighborhood for site history`;
+      `${cityLabel} · ${allPermits.length.toLocaleString()} permits loaded · select a neighborhood for site history`;
   } catch (err) {
     if (gen !== dataGeneration) return;
     document.getElementById("grid-view").innerHTML =
