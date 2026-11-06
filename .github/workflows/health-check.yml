@@ -50,6 +50,7 @@ jobs:
             CODE=${PIPESTATUS[0]}
           fi
           set -e
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
           case "$CODE" in
             0) echo "::notice::Live site healthy" ;;
             2) echo "::warning::Health check could not run (exit 2) — site status unknown" ;;
@@ -72,4 +73,17 @@ jobs:
             gh issue comment "$OPEN" --repo "$GITHUB_REPOSITORY" --body "$BODY" || true
           else
             gh issue create --repo "$GITHUB_REPOSITORY" --title "Daily health check failed — $(date +%Y-%m-%d)" --body "$BODY" || true
+          fi
+
+      # Only a fully clean run closes it: exit 2 says nothing about the site, and exit 3 means a
+      # City source is still down. Issue #3 sat open for a week after one failure on 2026-10-26,
+      # so the next real failure would have landed as a comment on a stale issue.
+      - name: Close the failure issue once the site is clean again
+        if: steps.check.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OPEN=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "Daily health check failed in:title" --json number -q '.[0].number' || true)
+          if [ -n "$OPEN" ]; then
+            gh issue close "$OPEN" --repo "$GITHUB_REPOSITORY" --comment "Clean run — closing. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
           fi

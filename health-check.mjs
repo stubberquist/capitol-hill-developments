@@ -104,9 +104,19 @@ const MAX_DATA_AGE_DAYS = 10;
 // Direct queries to each optional source, used only when the page reports it unavailable or
 // unsettled. `match` attributes console errors and failed requests to the source.
 const socrataCount = id => `https://data.seattle.gov/resource/${id}.json?$select=count(*)%20as%20n`;
+// SDOT's records in force today, with the page's own filter. The whole layer (~600k rows,
+// mostly historic) only proves SDOT published *something*: on 2026-10-26 the page found 16
+// street-work projects against a normal ~280 while the layer was nowhere near empty, and
+// that was blamed on the site. 839 were active on 2026-11-02; under 300 is a partial layer.
+const seattleToday = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(new Date());
+const sdotCount = where => "https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/SU_Permit_Data_Model_Relationships/FeatureServer/2/query?where=" +
+  encodeURIComponent(where) + "&returnCountOnly=true&f=json";
 const UPSTREAM = {
   street:   { match: ["SU_Permit_Data_Model_Relationships"], floorKey: "streetActivity",
-              urls: ["https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/SU_Permit_Data_Model_Relationships/FeatureServer/2/query?where=1%3D1&returnCountOnly=true&f=json"] },
+              urls: [sdotCount("1=1"),
+                     { url: sdotCount("PERMIT_TYPE_ALIAS IN ('Construction and Storage Containers','ROW Construction Permit','Shoring') " +
+                         `AND PERMIT_STATUS='Issued' AND USE_START_DATE <= TIMESTAMP '${seattleToday} 23:59:59' AND USE_END_DATE >= TIMESTAMP '${seattleToday} 00:00:00'`),
+                       min: 300, what: "active construction records (normally ~800)" }] },
   landuse:  { match: ["ht3q-kdvx"], urls: [socrataCount("ht3q-kdvx")] },
   cofo:     { match: ["axkr-2p68"], floorKey: "cofo", urls: [socrataCount("axkr-2p68")] },
   activity: { match: ["c87v-5hwh", "c4tj-daue"], floorKey: "activity",
@@ -119,7 +129,8 @@ const UPSTREAM = {
 // Resolves to a reason string when the source itself is down, or null when it answers with
 // records. Empty counts as down: that is the failure SDOT actually had.
 async function upstreamDown(key) {
-  for (const url of UPSTREAM[key].urls) {
+  for (const u of UPSTREAM[key].urls) {
+    const url = u.url || u;
     const host = new URL(url).host;
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -130,6 +141,7 @@ async function upstreamDown(key) {
       if (!Number.isFinite(n)) return `unreadable count from ${host}`;
       if (n === 0) return UPSTREAM[key].empty ||
         `${url.includes("arcgis") ? "SDOT street-use layer" : url.match(/resource\/([\w-]+)/)[1]} has 0 records`;
+      if (u.min && n < u.min) return `SDOT street-use layer has only ${n.toLocaleString()} ${u.what}`;
     } catch (e) { return `${host} did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
   }
   return null;
