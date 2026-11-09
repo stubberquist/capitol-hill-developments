@@ -29,7 +29,7 @@ curl -sf $CURL_TIMEOUTS -G "https://data.seattle.gov/resource/76t5-zqzr.json" \
   --data-urlencode "\$\$app_token=$TOKEN" > "$TMP/seattle.json"
 
 echo "Fetching notable Bellevue filings since $SINCE..."
-curl -sf $CURL_TIMEOUTS -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query" \
+curl -sf $CURL_TIMEOUTS -G "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permit/FeatureServer/0/query" \
   --data-urlencode "where=APPLIEDDATE >= DATE '$SINCE' AND (VALUATION >= 5000000 OR DWELLINGUNITSCREATED >= 20)" \
   --data-urlencode "outFields=PERMITNUMBER,SITEADDRESS,PROJECTDESCRIPTION,VALUATION,DWELLINGUNITSCREATED,APPLIEDDATE" \
   --data-urlencode "orderByFields=VALUATION DESC" \

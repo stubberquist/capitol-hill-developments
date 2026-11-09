@@ -403,6 +403,12 @@ const data = interactive ? await evaluate(`({
   changedSinceVisit: null,
   sipFetched: typeof SIP_FETCHED!=="undefined" ? SIP_FETCHED : null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,
+  // The endpoints the deployed page actually reads, for the freshness probes below.
+  endpoints: {
+    seattle:  typeof API!=="undefined" ? API : null,
+    bellevue: typeof BELLEVUE_API!=="undefined" ? BELLEVUE_API : null,
+    street:   typeof STREET_USE_URL!=="undefined" ? STREET_USE_URL : null,
+  },
 })`).catch(() => null) : null;
 
 // Read the key out of the DEPLOYED page rather than hardcoding it here — one source of
@@ -594,6 +600,39 @@ for (const [k, why] of Object.entries(upstream)) {
       upstreamProblems.unshift(`${problems.splice(i, 1)[0]} — confirmed upstream: ${why}`);
 }
 
+// A source can also go stale while still answering: Bellevue's layer froze on 2026-09-16 with
+// 443,126 rows while the City published to a new one, and every count above looked healthy
+// for seven weeks. Each probe reads the newest date the page's own endpoint holds. Stale is
+// upstream (exit 3). A probe that can't answer is only recorded — whether a source loads at
+// all is the page status check's job, and a blip here mustn't read as a site failure.
+// Thresholds clear normal gaps: SDCI's newest applieddate trails by a weekend (plus a holiday),
+// Bellevue's by a couple of days, and SDOT republishes nightly.
+const arcMax = (base, field) => base.replace(/\/query$/, "") + "/query?where=1%3D1&f=json&outStatistics=" +
+  encodeURIComponent(JSON.stringify([{ statisticType: "max", onStatisticField: field, outStatisticFieldName: "m" }]));
+const ep = data?.endpoints || {};
+const FRESHNESS = [
+  { label: "SDCI permits (76t5-zqzr)", maxDays: 5, base: ep.seattle,
+    url: b => `${b}?$select=max(applieddate)%20as%20m`, read: j => Date.parse(j[0]?.m) },
+  { label: "Bellevue permits", maxDays: 7, base: ep.bellevue,
+    url: b => arcMax(b, "APPLIEDDATE"), read: j => j.features?.[0]?.attributes?.m },
+  { label: "SDOT street-use layer", maxDays: 3, base: ep.street,
+    url: b => b.replace(/\/query$/, "") + "?f=json", read: j => j.editingInfo?.lastEditDate },
+];
+const freshness = {};
+for (const f of FRESHNESS) {
+  if (!f.base) { freshness[f.label] = "endpoint not found on the page"; continue; }
+  try {
+    const r = await fetch(f.url(f.base), { signal: AbortSignal.timeout(8000) });
+    const t = r.ok ? f.read(await r.json()) : NaN;
+    if (!Number.isFinite(t)) { freshness[f.label] = `no usable date (HTTP ${r.status})`; continue; }
+    const days = Math.floor((Date.now() - t) / 86400000);
+    const newest = new Date(t).toISOString().slice(0, 10);
+    freshness[f.label] = `${newest} (${days} d)`;
+    if (days > f.maxDays)
+      upstreamProblems.push(`${f.label} is stale: newest record ${newest}, ${days} days old (limit ${f.maxDays})`);
+  } catch (e) { freshness[f.label] = `did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
+}
+
 console.log(JSON.stringify({
   url: URL_,
   checkedAt: new Date().toISOString(),
@@ -604,6 +643,7 @@ console.log(JSON.stringify({
   consoleErrors: uniq(consoleErrors).slice(0, 10),
   uncaughtExceptions: uniq(exceptions).slice(0, 10),
   networkFailures: uniq(netFailures).slice(0, 10),
+  freshness,
   problems,
   upstream: upstreamProblems,
 }, null, 1));

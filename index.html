@@ -1446,6 +1446,8 @@
       margin-bottom: 12px;
     }
     .an-chart-card .chart-wrap { position: relative; height: 260px; }
+    /* Chart.js draws at its 300px default before measuring the card, which widened a 320px page for a moment. */
+    .an-chart-card canvas { max-width: 100%; }
     .an-src { font-size: 10px; color: var(--muted); margin-top: 8px; text-align: right; }
     .an-desc { font-size: 11px; color: var(--muted); line-height: 1.45; margin: -8px 0 12px; }
     /* Clamped: the longest explainer ran eight lines and stretched all six boxes to match. Tap expands. */
@@ -1839,8 +1841,9 @@ const NEIGHBORHOODS = {
 };
 // </generated:neighborhoods>
 
-// Bellevue ArcGIS FeatureServer
-const BELLEVUE_API = "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query";
+// Bellevue ArcGIS FeatureServer. Bellevue_Permit, not the older Bellevue_Permits: that layer
+// froze on 2026-09-17 while still answering with 443k rows, and the City publishes here now.
+const BELLEVUE_API = "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permit/FeatureServer/0/query";
 
 // Bellevue neighborhoods — filter via built-in SUBAREA field (no bounding boxes needed)
 const BELLEVUE_NEIGHBORHOODS = {

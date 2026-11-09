@@ -152,7 +152,10 @@ jobs:
           # Raised again to 130 KB on 2026-10-05, when the phone filter collapse, map labels
           # and source-status notices took it ~2 KB past 120 KB. Same reasoning: nothing big
           # is left to trim without removing a feature.
-          SOFT=133120   # 130 KB gzipped — warn
+          # Raised to 140 KB on 2026-11-09: the page sat at 132,345 B (775 B headroom) after the
+          # UI review, so any feature from the open research list would have crossed it. Splitting
+          # the analytics code into a lazy file stays the plan for when a feature needs real room.
+          SOFT=143360   # 140 KB gzipped — warn
           HARD=153600   # 150 KB gzipped — fail
           SIZE=$(gzip -c index.html | wc -c)
           RAW=$(wc -c < index.html)
