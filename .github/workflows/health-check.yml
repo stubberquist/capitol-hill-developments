@@ -75,15 +75,51 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "Daily health check failed — $(date +%Y-%m-%d)" --body "$BODY" || true
           fi
 
-      # Only a fully clean run closes it: exit 2 says nothing about the site, and exit 3 means a
-      # City source is still down. Issue #3 sat open for a week after one failure on 2026-10-26,
-      # so the next real failure would have landed as a comment on a stale issue.
+      # Exit 0 or 3 closes it: both mean the site itself is clean (3 adds "and a City source is
+      # down upstream"). Exit 2 says nothing about the site. It used to need a full exit 0, but a
+      # long-running City gap — Bellevue publishing no project values from September 2026 —
+      # holds the check at exit 3 for weeks, and a site-failure issue would never have closed.
+      # Issue #3 sat open for a week after one failure on 2026-10-26 for want of this step.
       - name: Close the failure issue once the site is clean again
-        if: steps.check.outputs.code == '0'
+        if: steps.check.outputs.code == '0' || steps.check.outputs.code == '3'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           OPEN=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "Daily health check failed in:title" --json number -q '.[0].number' || true)
           if [ -n "$OPEN" ]; then
-            gh issue close "$OPEN" --repo "$GITHUB_REPOSITORY" --comment "Clean run — closing. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+            gh issue close "$OPEN" --repo "$GITHUB_REPOSITORY" --comment "Site clean again — closing. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+          fi
+
+      # Most exit-3 outages mend themselves (SDOT republishing an empty layer) and stay a
+      # warning. These don't: a source that has gone stale, answers with an error, or has
+      # stopped carrying a field needs a person — Bellevue's layer sat frozen for seven weeks
+      # behind a healthy row count. One issue, opened once; a later run comments only when a
+      # problem appears that the issue hasn't already recorded (digits are ignored, so "54 days
+      # old" becoming "55" is not news), and it closes on the first run with none left.
+      - name: Open, update or close the stale-source issue
+        if: steps.check.outputs.code == '0' || steps.check.outputs.code == '3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          LINES=$(sed -n '/^UPSTREAM/,/^$/p' result.txt 2>/dev/null | grep -E 'is stale|answers with an error|Bellevue is publishing' | sed 's/^ *//' || true)
+          OPEN=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "City data source needs attention in:title" --json number -q '.[0].number' || true)
+          if [ -z "$LINES" ]; then
+            if [ -n "$OPEN" ]; then
+              gh issue close "$OPEN" --repo "$GITHUB_REPOSITORY" --comment "No stale or broken source on this run — closing. $RUN" || true
+            fi
+            exit 0
+          fi
+          if [ -z "$OPEN" ]; then
+            BODY=$(printf 'The daily health check found a City data source that will not mend itself. The site is otherwise clean.\n\n```\n%s\n```\n\nLogs: %s\n' "$LINES" "$RUN")
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "City data source needs attention — $(date +%Y-%m-%d)" --body "$BODY" || true
+            exit 0
+          fi
+          SEEN=$(gh issue view "$OPEN" --repo "$GITHUB_REPOSITORY" --json body,comments -q '.body, .comments[].body' | tr -d '0-9,' || true)
+          NEW=$(printf '%s\n' "$LINES" | while IFS= read -r L; do
+            KEY=$(printf '%s' "$L" | tr -d '0-9,' | cut -c1-40)
+            grep -qF -- "$KEY" <<<"$SEEN" || printf '%s\n' "$L"
+          done)
+          if [ -n "$NEW" ]; then
+            gh issue comment "$OPEN" --repo "$GITHUB_REPOSITORY" --body "$(printf 'Also now:\n\n```\n%s\n```\n\nLogs: %s\n' "$NEW" "$RUN")" || true
           fi

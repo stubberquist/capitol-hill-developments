@@ -2636,6 +2636,33 @@ function expiryMissing() {
   return expiryMemo.missing;
 }
 
+// Bellevue's layer can be current and still missing whole fields. From early September 2026
+// it carried no VALUATION on anything issued after 09-08 and no FINALEDDATE after 09-04, while
+// applications and issue dates kept arriving daily — so new projects showed no cost, nothing
+// could become Completed, and the YTD value quietly stopped growing. Two small counts over the
+// last 45 days say whether that is the case today. Asked once per session; a failure to ask
+// leaves both false, because "we couldn't check" is not a gap worth announcing.
+const BELLEVUE_GAPS = { values: false, finals: false };
+let bellevueGapsCheck = null, bellevueGapsSettled = false;   // settled: read by health-check.mjs
+function checkBellevueGaps() {
+  return bellevueGapsCheck ||= (async () => {
+    try {
+      const since = isoDate(new Date(Date.now() - 45 * 864e5)), today = isoDate(new Date());
+      const count = (field, name) => ({ statisticType: "count", onStatisticField: field, outStatisticFieldName: name });
+      const [[issued], [finaled]] = await Promise.all([
+        arcStats(`ISSUEDDATE >= DATE '${since}'`, [count("ObjectId", "n"), count("VALUATION", "val")]),
+        arcStats(`FINALEDDATE >= DATE '${since}' AND FINALEDDATE <= DATE '${today}'`, [count("ObjectId", "n")]),
+      ]);
+      // 200: Bellevue issues ~1,400 permits a month, so fewer means the layer itself is thin
+      // and the freshness of its fields can't be judged from it.
+      if (!issued || issued.n < 200) return;
+      BELLEVUE_GAPS.values = issued.val === 0;
+      BELLEVUE_GAPS.finals = !finaled || finaled.n === 0;
+      if ((BELLEVUE_GAPS.values || BELLEVUE_GAPS.finals) && currentCity === "bellevue") scheduleSourceRepaint();
+    } catch { /* leave both false */ } finally { bellevueGapsSettled = true; }
+  })();
+}
+
 // The flag options that depend on a source say so in their own label. Deliberately not
 // disabled: a disabled checkbox that is already ticked (a shared ?street=1 link, say) can't
 // be unticked, which would strand the user on an empty list.
@@ -2669,6 +2696,13 @@ function syncSourceUI() {
 // Grid note when the active filters depend on a source that isn't there. Empty results under
 // "Street work" would otherwise read as "no street work", which is the claim we can't make.
 function sourceGridNoteHTML() {
+  if (currentCity === "bellevue") {
+    const { values, finals } = BELLEVUE_GAPS;
+    if (!values && !finals) return "";
+    const what = [values && "project values", finals && "completion dates"].filter(Boolean).join(" or ");
+    const so = [values && "new projects show no cost", finals && "recently finished ones aren't marked Completed"].filter(Boolean).join(" and ");
+    return `<div class="source-note">Bellevue isn't publishing ${what} for recent permits right now, so ${so}.</div>`;
+  }
   const notes = [];
   if (streetWorkOnly && sourceDown("street"))
     notes.push("City street-closure data is unavailable right now, so the Street work filter can't match anything.");
@@ -2683,7 +2717,6 @@ function sourceGridNoteHTML() {
   if (notes.length) return `<div class="source-note">${notes.map(esc).join(" ")}</div>`;
   // Still arriving. A deep link like ?quiet=1 used to render "No results" for the second or
   // two before its data landed — longer on a phone — with nothing to say it was coming.
-  if (currentCity === "bellevue") return "";
   const waiting = [];
   if (streetWorkOnly && SOURCE_STATE.street === "loading") waiting.push("street-closure");
   if (quietOnly && SOURCE_STATE.activity === "loading") waiting.push("trade-permit");
@@ -3403,12 +3436,21 @@ function getStatus(p) {
   // Post-issuance construction states that read as neither "issued" nor "complete".
   if (s.includes("approved to occupy") || s.includes("inspections completed")) return "complete";
   if (s === "active") return "issued";
+  // Bellevue's own words, matched whole so nothing in Seattle's vocabulary can collide: "Open"
+  // is a brand-new application, "TCO" a temporary certificate of occupancy (the building is in
+  // use), "Screened Out" a rejection at intake. All three sat in grey "Other".
+  if (s === "open") return "pending";
+  if (s === "tco") return "complete";
+  if (s === "screened out") return "cancelled";
   // "Closed" is an administrative disposition, not a finished building. Citywide 8,967
   // permits carry it and 8,321 of those (93%) were never issued — 8,307 never even applied;
   // only 587 have a completeddate. Treating the word as completion put 27 permits with no
   // applieddate, no issueddate and no completeddate on screen as green "Completed" cards,
   // counting $466M and 70 homes as built that were never started. Decide on the evidence.
-  if (s.includes("closed")) return p.completeddate ? "complete" : "cancelled";
+  // Bellevue records the same evidence as finaleddate. Reading only completeddate labelled
+  // every finished Bellevue project Cancelled — 3,451 of 5,130, $9.96B and 37,540 homes,
+  // with nothing in the view Completed — from 2026-09-07 until 2026-11-09.
+  if (s.includes("closed")) return (p.completeddate || p.finaleddate) ? "complete" : "cancelled";
   // "complete" as a substring also matches "Completeness Check" (an early intake stage) and
   // "Not Complete" (its opposite) — require it as a whole word and not preceded by "not".
   const isComplete = /\bcomplete(d)?\b/.test(s) && !/\bnot\s+complete/.test(s);
@@ -5769,7 +5811,9 @@ function renderAnalytics(d) {
     { label: "Total Project Value YTD", cur: d.ytd.value,   prev: d.ytdPrior.value,   fmt: fmtValue,
       note: `vs ${fmtValue(d.ytdPrior.value)} same period last year`,
       desc: "Combined estimated cost of this year's filings.",
-      warn: d.ytd.value < d.ytdPrior.value * 0.1
+      warn: currentCity === "bellevue" && BELLEVUE_GAPS.values
+        ? "Bellevue isn't publishing values for recent permits right now — this figure is missing the last several weeks."
+        : d.ytd.value < d.ytdPrior.value * 0.1
         ? "The city hasn't recorded a valuation for most of this year's permits yet — this figure is incomplete."
         : null },
   ];
@@ -5954,7 +5998,8 @@ async function loadAnalytics() {
     });
   }
   try {
-    renderAnalytics(await analyticsCache.get(key).promise);
+    const [d] = await Promise.all([analyticsCache.get(key).promise, currentCity === "bellevue" ? checkBellevueGaps() : null]);
+    renderAnalytics(d);
   } catch (err) {
     analyticsCache.delete(key);
     document.getElementById("an-stats").innerHTML =
@@ -6495,6 +6540,7 @@ async function init() {
     }
 
     allPermits = currentCity === "bellevue" ? await fetchBellevuePermits() : await fetchPermits();
+    if (currentCity === "bellevue") checkBellevueGaps();
     computeWatchChanges();
     applyFilters();
     // Everything that decorates the grid rather than building it starts here, once the
@@ -6624,6 +6670,7 @@ document.getElementById("filter-city").addEventListener("change", async function
     // dropdown and neighbourhood list.
     if (gen !== dataGeneration) return;
     allPermits = loaded;
+    if (currentCity === "bellevue") checkBellevueGaps();
     computeWatchChanges();
     applyFilters();
     // Decoration, once the permit pages have had the connection to themselves.

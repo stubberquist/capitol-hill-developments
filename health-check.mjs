@@ -139,9 +139,9 @@ async function upstreamDown(key) {
       if (j.error) return `ArcGIS error ${j.error.code ?? ""} ${j.error.message ?? ""}`.trim();
       const n = Number(j.count ?? j[0]?.n);
       if (!Number.isFinite(n)) return `unreadable count from ${host}`;
-      if (n === 0) return UPSTREAM[key].empty ||
-        `${url.includes("arcgis") ? "SDOT street-use layer" : url.match(/resource\/([\w-]+)/)[1]} has 0 records`;
-      if (u.min && n < u.min) return `SDOT street-use layer has only ${n.toLocaleString()} ${u.what}`;
+      const name = UPSTREAM[key].name || (url.includes("arcgis") ? "SDOT street-use layer" : url.match(/resource\/([\w-]+)/)[1]);
+      if (n === 0) return UPSTREAM[key].empty || `${name} has 0 records`;
+      if (u.min && n < u.min) return `${name} has only ${n.toLocaleString()} ${u.what}`;
     } catch (e) { return `${host} did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
   }
   return null;
@@ -445,6 +445,39 @@ if (interactive && data) {
   data.changedSinceVisit = secondVisit ? secondVisit.changed : null;
 }
 
+// ── Bellevue view ────────────────────────────────────────────────────────────
+// Everything above loads Seattle. Nothing loaded Bellevue, and both of the week of 2026-11-09's
+// headline problems sat in it unseen: the layer the page read had been frozen for seven weeks,
+// and for two months every finished Bellevue project (3,451 of 5,130) was labelled Cancelled
+// with nothing in the view Completed. Last, so the city switch can't disturb the Seattle
+// readings or the second-visit baseline.
+let bellevue = null;
+if (interactive && data) {
+  await cdp.send("Page.navigate", { url: "about:blank" }).catch(() => {});
+  await new Promise(r => setTimeout(r, 300));
+  const u = new URL(URL_); u.searchParams.set("city", "bellevue"); u.searchParams.set("view", "grid");
+  await cdp.send("Page.navigate", { url: u.href }).catch(() => {});
+  for (let i = 0; i < 600; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    if (await evaluate(`(location.href.startsWith("http") && typeof allPermits!=="undefined" && allPermits.length>0 && allPermits[0]._city==="bellevue" && document.querySelectorAll(".card").length>0)`).catch(() => false)) {
+      // The field-gap check is two small counts fired after the permits land; give it a moment
+      // to answer and repaint before the notice is read.
+      for (let j = 0; j < 40; j++) {
+        if (await evaluate(`(typeof bellevueGapsSettled!=="undefined" && bellevueGapsSettled)`).catch(() => true)) break;
+        await new Promise(r => setTimeout(r, 250));
+      }
+      await new Promise(r => setTimeout(r, 300));
+      bellevue = await evaluate(`(() => {
+        const t = {}; for (const p of allPermits) { const k = getStatus(p); t[k] = (t[k] || 0) + 1; }
+        return { permits: allPermits.length, complete: t.complete || 0, other: t.other || 0,
+                 gaps: typeof BELLEVUE_GAPS!=="undefined" ? { ...BELLEVUE_GAPS } : null,
+                 notice: document.querySelector("#grid-view .source-note")?.textContent || "" };
+      })()`).catch(() => null);
+      break;
+    }
+  }
+}
+
 cdp.close();
 cleanup();
 
@@ -531,6 +564,14 @@ if (data) {
 }
 // The map and analytics probes are separately catch(() => null)'d, so "the probe threw" and
 // "the view is broken" both land here rather than vanishing.
+// Bellevue shows ~5,100 permits, ~3,450 of them Completed. Collapse detectors, like the rest.
+const EXPECT_BELLEVUE = { permits: 3000, complete: 1000 };
+if (interactive && data) {
+  if (!bellevue) problems.push("bellevue view never loaded (no permits or no cards rendered)");
+  else for (const [k, min] of Object.entries(EXPECT_BELLEVUE))
+    if ((bellevue[k] ?? 0) < min) problems.push(`bellevue ${k} = ${bellevue[k]} (expected >= ${min})`);
+}
+
 if (interactive && !mapState) problems.push("map probe returned nothing — the map view could not be measured");
 else if (mapState) {
   for (const [k, min] of Object.entries(EXPECT_MAP))
@@ -569,6 +610,16 @@ if (interactive) {
 }
 
 // Which of the page's unavailable or unsettled sources are down at the source itself?
+// Bellevue isn't one of the page's tracked sources (those are Seattle joins); it is that
+// view's primary load. Probed, with the page's own filter, only when the Bellevue pass failed.
+if (data?.endpoints?.bellevue)
+  UPSTREAM.bellevue = {
+    match: [new URL(data.endpoints.bellevue).pathname.split("/services/")[1]?.split("/")[0] || "Bellevue_Permit"],
+    name: "Bellevue's permit layer", own: ["bellevue "],
+    when: () => interactive && data && (!bellevue || bellevue.permits < EXPECT_BELLEVUE.permits),
+    urls: [{ url: data.endpoints.bellevue + "?returnCountOnly=true&f=json&where=" +
+               encodeURIComponent("VALUATION >= 1000000 OR PERMITTYPE IN ('BB','BM','BA','LD','BE','BC')"),
+             min: EXPECT_BELLEVUE.permits, what: "permits matching the page's filter (normally ~5,100)" }] };
 const upstream = {};   // key -> reason
 for (const k of Object.keys(UPSTREAM)) {
   const st = data?.sources?.[k];
@@ -577,7 +628,7 @@ for (const k of Object.keys(UPSTREAM)) {
   // like (the request succeeds; the field it needed is blank).
   const fk = UPSTREAM[k].floorKey;
   const belowFloor = !!(data && fk && fk in EXPECT && (data[fk] ?? 0) < EXPECT[fk]);
-  if (st !== "unavailable" && !(data?.sourcesLoading || []).includes(k) && !belowFloor) continue;
+  if (st !== "unavailable" && !(data?.sourcesLoading || []).includes(k) && !belowFloor && !UPSTREAM[k].when?.()) continue;
   const why = await upstreamDown(k);
   if (why) upstream[k] = why;
 }
@@ -593,7 +644,7 @@ if (siteNet.length) problems.push(`${siteNet.length} failed request(s)`);
 // everything else stay site problems whatever the City is doing.
 const upstreamProblems = [];
 for (const [k, why] of Object.entries(upstream)) {
-  const own = [`${k} source unavailable`, `${k} source never settled`];
+  const own = [`${k} source unavailable`, `${k} source never settled`, ...(UPSTREAM[k].own || [])];
   if (UPSTREAM[k].floorKey) own.push(`${UPSTREAM[k].floorKey} = `);
   for (let i = problems.length - 1; i >= 0; i--)
     if (own.some(o => problems[i].startsWith(o)))
@@ -623,7 +674,17 @@ for (const f of FRESHNESS) {
   if (!f.base) { freshness[f.label] = "endpoint not found on the page"; continue; }
   try {
     const r = await fetch(f.url(f.base), { signal: AbortSignal.timeout(8000) });
-    const t = r.ok ? f.read(await r.json()) : NaN;
+    const j = r.ok ? await r.json() : null;
+    // An error BODY is the service itself answering "no" — a layer deleted or renamed, a field
+    // dropped — and it will say so every day until someone acts. Unlike a timeout or a 503,
+    // that is not a blip to shrug off.
+    if (j?.error) {
+      const why = `${j.error.code ?? ""} ${j.error.message ?? ""}`.trim();
+      freshness[f.label] = `service error (${why})`;
+      upstreamProblems.push(`${f.label}: the City's service answers with an error (${why}) — the layer may have moved`);
+      continue;
+    }
+    const t = j ? f.read(j) : NaN;
     if (!Number.isFinite(t)) { freshness[f.label] = `no usable date (HTTP ${r.status})`; continue; }
     const days = Math.floor((Date.now() - t) / 86400000);
     const newest = new Date(t).toISOString().slice(0, 10);
@@ -633,11 +694,41 @@ for (const f of FRESHNESS) {
   } catch (e) { freshness[f.label] = `did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
 }
 
+// Fresh rows can still arrive with whole fields missing. Bellevue's layer, measured 2026-11-09:
+// permits issued in August, 92 of 1,415 carry a VALUATION; issued since 09-08, 0 of 1,522; and
+// no FINALEDDATE after 09-04 against ~1,200 a month before. Same two 45-day counts the page
+// makes for its own notice — asked here directly, so the page's answer can be checked too.
+if (ep.bellevue) {
+  const D = ms => new Date(ms).toISOString().slice(0, 10), since = D(Date.now() - 45 * 86400000);
+  const stat = (where, stats) => fetch(ep.bellevue + "?f=json&where=" + encodeURIComponent(where) + "&outStatistics=" +
+      encodeURIComponent(JSON.stringify(stats.map(([f, n]) => ({ statisticType: "count", onStatisticField: f, outStatisticFieldName: n })))),
+      { signal: AbortSignal.timeout(8000) }).then(r => r.json()).then(j => j.features?.[0]?.attributes);
+  try {
+    const [issued, finaled] = await Promise.all([
+      stat(`ISSUEDDATE >= DATE '${since}'`, [["ObjectId", "n"], ["VALUATION", "val"]]),
+      stat(`FINALEDDATE >= DATE '${since}' AND FINALEDDATE <= DATE '${D(Date.now())}'`, [["ObjectId", "n"]]),
+    ]);
+    if (issued && issued.n >= 200) {
+      const gaps = [];
+      if (issued.val === 0) gaps.push(`no project values (0 of ${issued.n.toLocaleString()} permits issued in the last 45 days)`);
+      if (!finaled || finaled.n === 0) gaps.push("no completion dates in the last 45 days");
+      freshness["Bellevue fields"] = gaps.length ? gaps.join("; ") : `values on ${issued.val} of ${issued.n} recent permits, ${finaled.n} recent completions`;
+      if (gaps.length) {
+        upstreamProblems.push(`Bellevue is publishing ${gaps.join(" and ")}`);
+        if (bellevue && !/isn't publishing/i.test(bellevue.notice))
+          problems.push("Bellevue is missing project values or completion dates but the page does not tell the user");
+      } else if (bellevue && /isn't publishing/i.test(bellevue.notice))
+        problems.push("the page says Bellevue isn't publishing values or completions, but the layer has both");
+    } else freshness["Bellevue fields"] = "too few recent permits to judge";
+  } catch (e) { freshness["Bellevue fields"] = `did not answer (${e.name === "TimeoutError" ? "timed out" : e.message})`; }
+}
+
 console.log(JSON.stringify({
   url: URL_,
   checkedAt: new Date().toISOString(),
   timeToInteractiveMs: interactive,
   data, map: mapState, analytics: analyticsState,
+  bellevue,
   basemap: { ...basemap, tileRequests: tileReqs.length,
              tilesKeyed: tileReqs.filter(t => t.url.includes("key=")).length },
   consoleErrors: uniq(consoleErrors).slice(0, 10),
