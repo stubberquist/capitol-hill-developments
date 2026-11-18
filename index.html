@@ -1841,9 +1841,13 @@ const NEIGHBORHOODS = {
 };
 // </generated:neighborhoods>
 
-// Bellevue ArcGIS FeatureServer. Bellevue_Permit, not the older Bellevue_Permits: that layer
-// froze on 2026-09-17 while still answering with 443k rows, and the City publishes here now.
-const BELLEVUE_API = "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permit/FeatureServer/0/query";
+// Bellevue ArcGIS FeatureServer. Bellevue_Permits (plural) froze on 2026-09-17, so 5a37505
+// moved to Bellevue_Permit (singular). By 2026-11-15 the City had revived and backfilled the
+// plural layer, and the singular one had stopped updating published permits instead: no final
+// dates after 09-04, no valuations, 09-08→09-15 and 11-12 missing. The plural layer was a strict
+// superset of the singular one's site scope, and all 62 statuses checked against MyBuildingPermit
+// agreed with it. If this one freezes again, the health check's 7-day freshness probe says so.
+const BELLEVUE_API = "https://services1.arcgis.com/EYzEZbDhXZjURPbP/arcgis/rest/services/Bellevue_Permits/FeatureServer/0/query";
 
 // Bellevue neighborhoods — filter via built-in SUBAREA field (no bounding boxes needed)
 const BELLEVUE_NEIGHBORHOODS = {
@@ -2228,7 +2232,7 @@ async function fetchBellevueSiteHistory(subarea) {
   try {
     const features = await arcFetchAll({
       where: `SUBAREA = '${subarea}'`,
-      outFields: "PERMITNUMBER,SITEADDRESS,APPLIEDDATE,ISSUEDDATE,PERMITTYPE,PERMITTYPEDESCRIPTION,PERMITSTATUS,VALUATION",
+      outFields: "PERMITNUMBER,SITEADDRESS,APPLIEDDATE,ISSUEDDATE,FINALEDDATE,PERMITTYPE,PERMITTYPEDESCRIPTION,PERMITSTATUS,VALUATION",
       outSR: "4326",
       returnGeometry: "false",
       orderByFields: "ISSUEDDATE DESC",
@@ -2430,7 +2434,7 @@ function seattleTodayMs() {
 // constant like SIP_INDEX because 2,424 entries would cost ~25-30 KB gzipped against ~14 KB
 // of size-budget headroom.
 const LU_API = "https://data.seattle.gov/resource/ht3q-kdvx.json";
-let LU_INDEX = {};   // relatedmup → { status, applied, decided, description }
+let LU_INDEX = {};   // land-use permitnum → { id, status, applied, decided, description }
 
 async function fetchLandUse(mups) {
   const out = {};
@@ -2441,7 +2445,10 @@ async function fetchLandUse(mups) {
   // which is how long the land-use lines trailed the cards on a phone.
   const chunks = [];
   for (let i = 0; i < mups.length; i += CHUNK) chunks.push(mups.slice(i, i + CHUNK));
-  const pages = await Promise.all(chunks.map(async chunk => {
+  // allSettled, not all: one chunk stuck behind the 30 s background timeout used to throw away
+  // the six that had answered, blanking every land-use line (GitHub health check, 2026-11-12;
+  // a cold chunk took 8.7 s on 11-16). Only when every chunk fails is the source down.
+  const settled = await Promise.allSettled(chunks.map(async chunk => {
     const list = chunk.map(m => `'${String(m).replace(/'/g, "''")}'`).join(",");
     const params = new URLSearchParams({
       "$select": "permitnum,statuscurrent,applieddate,decisiondate,description",
@@ -2453,14 +2460,35 @@ async function fetchLandUse(mups) {
     if (!res.ok) throw new Error(`Land Use HTTP ${res.status}`);
     return res.json();
   }));
-  for (const rows of pages) for (const r of rows) {
-    out[r.permitnum] = { status: r.statuscurrent || "", applied: r.applieddate || "",
-                         decided: r.decisiondate || "", description: r.description || "" };
+  const failed = settled.filter(r => r.status === "rejected");
+  if (chunks.length && failed.length === chunks.length) throw failed[0].reason;
+  for (const r of settled) if (r.status === "fulfilled") for (const row of r.value) {
+    out[row.permitnum] = { id: row.permitnum, status: row.statuscurrent || "", applied: row.applieddate || "",
+                           decided: row.decisiondate || "", description: row.description || "" };
   }
   return out;
 }
 
-function luFor(p) { return p.relatedmup ? (LU_INDEX[p.relatedmup] || null) : null; }
+// relatedmup is usually one id, but 100 SDCI permits (30 on the page) list two:
+// "3041336-LU, 3041439-LU". Sent whole, that matched nothing, so 9 projects in review lost
+// their "why is it stuck" line. Each id is looked up separately, and the newest land-use
+// application stands for the project, since a second MUP is filed to replace or revise the first.
+function mupIds(v) { return v ? String(v).split(",").map(x => x.trim()).filter(Boolean) : []; }
+
+function luFor(p) {
+  let best = null;
+  for (const id of mupIds(p.relatedmup)) {
+    const lu = LU_INDEX[id];
+    if (lu && (!best || (lu.applied || "") > (best.applied || ""))) best = lu;
+  }
+  return best;
+}
+
+// The land-use record a project's MUP link should open: the one luFor chose, else the first id.
+function mupUrlFor(p) {
+  const id = luFor(p)?.id || mupIds(p.relatedmup)[0];
+  return id ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(id)}` : null;
+}
 
 // One compact line: land-use status, when it was applied for, when SDCI decided. The
 // land-use application predates the building permit by a median of 163 days (91% of
@@ -2869,7 +2897,7 @@ function startBackgroundJoins() {
   const settle = (remap) => { if (gen === dataGeneration) applyFilters({ preserveView: true, remap }); };
 
   // Land use needs allPermits for its id list, so it can't start alongside the permit fetch.
-  const mups = [...new Set(allPermits.map(p => p.relatedmup).filter(Boolean))];
+  const mups = [...new Set(allPermits.flatMap(p => mupIds(p.relatedmup)))];
   setSource("landuse", "loading");
   fetchLandUse(mups)
     .then(idx => {
@@ -3438,8 +3466,9 @@ function getStatus(p) {
   if (s === "active") return "issued";
   // Bellevue's own words, matched whole so nothing in Seattle's vocabulary can collide: "Open"
   // is a brand-new application, "TCO" a temporary certificate of occupancy (the building is in
-  // use), "Screened Out" a rejection at intake. All three sat in grey "Other".
-  if (s === "open") return "pending";
+  // use), "Screened Out" a rejection at intake. All three sat in grey "Other". "Completeness
+  // Check" is Bellevue's intake review of a new submission; it fell through to "Other" too.
+  if (s === "open" || s === "completeness check") return "pending";
   if (s === "tco") return "complete";
   if (s === "screened out") return "cancelled";
   // "Closed" is an administrative disposition, not a finished building. Citywide 8,967
@@ -4045,7 +4074,7 @@ function renderGrid(permits) {
     const mapsUrl    = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
     const sipId      = SIP_INDEX[normalizeAddr(p)];
     const sipUrl     = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
-    const mupUrl     = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
+    const mupUrl     = mupUrlFor(p);
     const ptLabel    = getPermitTypeLabel(p);
 
     // Site history from address index
@@ -4240,7 +4269,7 @@ function openModal(pn) {
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
   const sipId   = SIP_INDEX[normalizeAddr(p)];
   const sipUrl  = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
-  const mupUrl  = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
+  const mupUrl  = mupUrlFor(p);
   const units   = extractUnits(p);
   const ptLabel = getPermitTypeLabel(p);
   const hasLoc  = parseFloat(p.latitude) && parseFloat(p.longitude);
@@ -4511,7 +4540,7 @@ function permitPopupBody(p) {
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawAddr + ", " + cityStr)}`;
   const sipId  = SIP_INDEX[normalizeAddr(p)];
   const sipUrl = sipId ? `https://www.seattleinprogress.com/project/${encodeURIComponent(sipId)}` : null;
-  const mupUrl = p.relatedmup ? `https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=${encodeURIComponent(p.relatedmup)}` : null;
+  const mupUrl = mupUrlFor(p);
   const lapsedMs = status === "issued" ? permitLapsed(p) : null;
 
   return `
@@ -5807,7 +5836,9 @@ function renderAnalytics(d) {
       desc: "Permit applications submitted since Jan 1." },
     { label: "Housing Units Added YTD", cur: d.ytd.units,   prev: d.ytdPrior.units,   fmt: intFmt,
       note: `vs ${intFmt(d.ytdPrior.units)} same period last year`,
-      desc: "Homes created by permits filed this year. Seattle records a project's unit count on every permit in it, including the demolition record, so paired demolition entries are collapsed to avoid counting the same homes twice." },
+      desc: currentCity === "bellevue"
+        ? "Homes created by permits filed this year, from the dwelling-unit count Bellevue records on each permit."
+        : "Homes created by permits filed this year. Seattle records a project's unit count on every permit in it, including the demolition record, so paired demolition entries are collapsed to avoid counting the same homes twice." },
     { label: "Total Project Value YTD", cur: d.ytd.value,   prev: d.ytdPrior.value,   fmt: fmtValue,
       note: `vs ${fmtValue(d.ytdPrior.value)} same period last year`,
       desc: "Combined estimated cost of this year's filings.",

@@ -96,13 +96,17 @@ jobs:
       # behind a healthy row count. One issue, opened once; a later run comments only when a
       # problem appears that the issue hasn't already recorded (digits are ignored, so "54 days
       # old" becoming "55" is not news), and it closes on the first run with none left.
+      # A Bellevue view that can't load because the layer is gone, empty or erroring counts too:
+      # until 2026-11-16 those lines matched nothing here, so this step closed the open issue
+      # while the whole Bellevue view was down. SDOT's empty republishes stay out on purpose —
+      # they have always mended themselves within a day.
       - name: Open, update or close the stale-source issue
         if: steps.check.outputs.code == '0' || steps.check.outputs.code == '3'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          LINES=$(sed -n '/^UPSTREAM/,/^$/p' result.txt 2>/dev/null | grep -E 'is stale|answers with an error|Bellevue is publishing' | sed 's/^ *//' || true)
+          LINES=$(sed -n '/^UPSTREAM/,/^$/p' result.txt 2>/dev/null | grep -E 'is stale|answers with an error|Bellevue is publishing|^ *bellevue .*confirmed upstream' | sed 's/^ *//' || true)
           OPEN=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "City data source needs attention in:title" --json number -q '.[0].number' || true)
           if [ -z "$LINES" ]; then
             if [ -n "$OPEN" ]; then

@@ -42,7 +42,8 @@ const CHROME = process.env.CHROME_PATH
 // never rejects, so `node health-check.mjs "gopher://nope/"` sat silently until killed and
 // left six Chrome processes behind. In CI that burns the entire job timeout and reports
 // nothing at all.
-const RUN_BUDGET_MS = 180_000;
+// 240 s since 2026-11-16: a retried Bellevue pass can add a minute to a normal ~60-90 s run.
+const RUN_BUDGET_MS = 240_000;
 
 // Anything the page is expected to have once it has settled. A zero here means a data
 // source went away even if nothing threw.
@@ -133,7 +134,12 @@ async function upstreamDown(key) {
     const url = u.url || u;
     const host = new URL(url).host;
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      // A single 8 s timeout used to count as proof the source was down, so a slow ArcGIS
+      // could hide a real page bug as exit 3 (2026-11-15 refresh run: "confirmed upstream:
+      // services1.arcgis.com did not answer (timed out)" while the freshness probes to the same
+      // host answered). One slower retry first; only a host that misses both is "not answering".
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) })
+        .catch(e => e.name === "TimeoutError" ? fetch(url, { signal: AbortSignal.timeout(20000) }) : Promise.reject(e));
       if (!r.ok) return `HTTP ${r.status} from ${host}`;
       const j = await r.json();
       if (j.error) return `ArcGIS error ${j.error.code ?? ""} ${j.error.message ?? ""}`.trim();
@@ -247,6 +253,17 @@ try {
   console.error("health-check: could not start or attach to Chrome —", e.message);
   process.exit(2);
 }
+// The comment above was only true of the try block: a CDP call below it that hung (e.g. a
+// dropped Page.navigate → "CDP timeout after 30000ms") rejected the top-level await and Node
+// exited 1, which CI reads as "the site is broken" — skipping the exit-2 retry and opening a
+// failure issue whose body was just "see logs" (reproduced 2026-11-16). Calls that are meant
+// to fail softly still .catch() locally; only an error nothing handled reaches these.
+for (const ev of ["uncaughtException", "unhandledRejection"])
+  process.on(ev, e => {
+    console.error(`health-check: checker crashed (${ev}) — treating as CHECK FAILURE:`, e?.stack || e);
+    cleanup();
+    process.exit(2);
+  });
 
 await cdp.send("Page.enable");
 await cdp.send("Runtime.enable");
@@ -440,7 +457,7 @@ if (interactive && data) {
       if (await evaluate(`Object.values(SOURCE_STATE).every(s => s !== "loading")`).catch(() => false)) break;
       await new Promise(r => setTimeout(r, 250));
     }
-    secondVisit = await evaluate(`({ changed: Object.keys(watchChanges).length })`).catch(() => null);
+    secondVisit = await evaluate(`({ changed: Object.keys(watchChanges).length, sources: { ...SOURCE_STATE } })`).catch(() => null);
   }
   data.changedSinceVisit = secondVisit ? secondVisit.changed : null;
 }
@@ -452,7 +469,13 @@ if (interactive && data) {
 // with nothing in the view Completed. Last, so the city switch can't disturb the Seattle
 // readings or the second-visit baseline.
 let bellevue = null;
-if (interactive && data) {
+// Two attempts: on 2026-11-16 the first run's Bellevue view never loaded while ArcGIS answered
+// a direct count in 0.15 s and a re-run a few minutes later was clean — a slow 4.5 MB page at
+// ArcGIS, not a site bug. A page that fails twice in a row is still reported.
+let bellevueAttempts = 0;
+while (interactive && data && !bellevue && bellevueAttempts < 2) {
+  bellevueAttempts++;
+  const netMark = netFailures.length, consoleMark = consoleErrors.length;
   await cdp.send("Page.navigate", { url: "about:blank" }).catch(() => {});
   await new Promise(r => setTimeout(r, 300));
   const u = new URL(URL_); u.searchParams.set("city", "bellevue"); u.searchParams.set("view", "grid");
@@ -475,6 +498,12 @@ if (interactive && data) {
       })()`).catch(() => null);
       break;
     }
+  }
+  // A first attempt abandoned for a retry leaves the requests it was waiting on as aborted
+  // failures; they belong to the attempt that was given up on, not to the site.
+  if (!bellevue && bellevueAttempts < 2) {
+    for (const [arr, mark] of [[netFailures, netMark], [consoleErrors, consoleMark]])
+      for (let i = arr.length - 1; i >= mark; i--) if (/arcgis/i.test(arr[i])) arr.splice(i, 1);
   }
 }
 
@@ -614,7 +643,7 @@ if (interactive) {
 // view's primary load. Probed, with the page's own filter, only when the Bellevue pass failed.
 if (data?.endpoints?.bellevue)
   UPSTREAM.bellevue = {
-    match: [new URL(data.endpoints.bellevue).pathname.split("/services/")[1]?.split("/")[0] || "Bellevue_Permit"],
+    match: [new URL(data.endpoints.bellevue).pathname.split("/services/")[1]?.split("/")[0] || "Bellevue_Permits"],
     name: "Bellevue's permit layer", own: ["bellevue "],
     when: () => interactive && data && (!bellevue || bellevue.permits < EXPECT_BELLEVUE.permits),
     urls: [{ url: data.endpoints.bellevue + "?returnCountOnly=true&f=json&where=" +
@@ -632,9 +661,36 @@ for (const k of Object.keys(UPSTREAM)) {
   const why = await upstreamDown(k);
   if (why) upstream[k] = why;
 }
+// A background source that timed out on the first visit but loaded on the second (same run,
+// about a minute later) is a slow City API, not a broken page. On 2026-11-12 one land-use
+// chunk passed the page's 30 s limit and GitHub opened a "site broken" issue that closed itself
+// the next day; the direct count probe can't see it, because a count answers fast while one
+// heavy IN() query stalls. Down on both visits is still a site problem.
+const transient = {};
+for (const [k, st] of Object.entries(data?.sources || {})) {
+  if (st !== "unavailable" || upstream[k] || !UPSTREAM[k]) continue;
+  if (!/no answer after/.test(data.sourceReasons?.[k] || "")) continue;
+  if (secondVisit?.sources?.[k] !== "ok") continue;
+  transient[k] = "timed out on the first load, loaded on the second visit";
+  const i = problems.findIndex(p => p.startsWith(`${k} source unavailable`));
+  if (i >= 0) problems.splice(i, 1);
+}
+const abortOnly = new Set();
+// The page's own background timeout aborts a request it gave up on (net::ERR_ABORTED) and
+// carries on with what did answer — land use keeps the chunks that loaded. When the source still
+// ended "ok", that abort, or a 5xx from the City on one chunk, is the page coping with a slow or
+// flaky City API, not a failed request.
+const handledFailure = s => s.includes("ERR_ABORTED") || /status of 5\d\d/.test(s);
+for (const [k, st] of Object.entries(data?.sources || {})) {
+  if (st !== "ok" || !UPSTREAM[k]) continue;
+  const n = uniq([...netFailures, ...consoleErrors]).filter(f => handledFailure(f) && UPSTREAM[k].match.some(m => f.includes(m))).length;
+  if (n) { transient[k] = `${n} request(s) timed out or failed at the City; the source loaded from the rest`; abortOnly.add(k); }
+}
 const fromUpstream = s => Object.keys(upstream).some(k => UPSTREAM[k].match.some(m => s.includes(m)));
-const siteConsole = uniq(consoleErrors).filter(s => !fromUpstream(s));
-const siteNet = uniq(netFailures).filter(s => !fromUpstream(s));
+const fromTransient = s => Object.keys(transient).some(k => UPSTREAM[k].match.some(m => s.includes(m))
+  && (!abortOnly.has(k) || handledFailure(s)));
+const siteConsole = uniq(consoleErrors).filter(s => !fromUpstream(s) && !fromTransient(s));
+const siteNet = uniq(netFailures).filter(s => !fromUpstream(s) && !fromTransient(s));
 if (siteConsole.length) problems.push(`${siteConsole.length} console error(s)`);
 if (uniq(exceptions).length) problems.push(`${uniq(exceptions).length} uncaught exception(s)`);
 if (siteNet.length) problems.push(`${siteNet.length} failed request(s)`);
@@ -735,6 +791,8 @@ console.log(JSON.stringify({
   uncaughtExceptions: uniq(exceptions).slice(0, 10),
   networkFailures: uniq(netFailures).slice(0, 10),
   freshness,
+  transient,
+  bellevueAttempts,
   problems,
   upstream: upstreamProblems,
 }, null, 1));
