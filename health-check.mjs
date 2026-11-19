@@ -94,8 +94,8 @@ const MAX_SITE_ADDRESSES = 40;
 const EXPECT_MAP = { markers: 1000, sites: 1000 };
 const EXPECT_ANALYTICS = { charts: 8 };
 
-// How stale the embedded data may get before it counts as a failure. SIP_FETCHED and
-// REZONE_FETCHED are baked in by the weekly refresh workflow and were read off the live page every
+// How stale the embedded data may get before it counts as a failure. REZONE_FETCHED is
+// baked in by the weekly refresh workflow and were read off the live page every
 // morning without ever being checked against the clock — so if the schedule stopped firing
 // (GitHub disables workflows after ~60 days of repo inactivity, or a YAML edit breaks the
 // trigger) the embedded index would quietly freeze while this reported CLEAN indefinitely.
@@ -418,7 +418,6 @@ const data = interactive ? await evaluate(`({
   cards: document.querySelectorAll(".card").length,
   // Replaced by the second-visit reading below; the first visit can't see this bug.
   changedSinceVisit: null,
-  sipFetched: typeof SIP_FETCHED!=="undefined" ? SIP_FETCHED : null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,
   // The endpoints the deployed page actually reads, for the freshness probes below.
   endpoints: {
@@ -582,7 +581,7 @@ if (data) {
   // Embedded-data staleness. Absent or unparseable dates are a problem in their own right:
   // the constants are written by the refresh workflow, so a missing one means the bake step
   // changed shape or stopped running.
-  for (const [k, label] of [["sipFetched", "SIP index"], ["rezoneFetched", "rezone index"]]) {
+  for (const [k, label] of [["rezoneFetched", "rezone index"]]) {
     const raw = data[k];
     const t = raw ? Date.parse(raw) : NaN;
     if (!Number.isFinite(t)) { problems.push(`${label}: no usable ${k} on the page (got ${JSON.stringify(raw)})`); continue; }

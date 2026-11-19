@@ -1,4 +1,7 @@
-name: Refresh Embedded Data (SIP index + market data + pending rezones)
+# The file keeps its old name (refresh-sip.yml) so run history and references stay put; the
+# SeattleInProgress index it was named for was dropped 2026-11-19 in favour of a live lookup of
+# Seattle's design review documents in the details window.
+name: Refresh Embedded Data (market data + pending rezones)
 
 on:
   schedule:
@@ -38,9 +41,6 @@ jobs:
       # a separate config file, included automatically).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Fetch and embed SIP index
-        run: bash refresh-sip-index.sh
-
       - name: Fetch and embed market data (Zillow + FRED)
         run: bash refresh-market-data.sh
 
@@ -53,7 +53,7 @@ jobs:
       - name: Build weekly digest (whats-new.html + feed.xml)
         run: bash build-whats-new.sh
 
-      # The refresh scripts rewrite three constants inside the app's only script tag by regex.
+      # The refresh scripts rewrite constants inside the app's only script tag by regex.
       # They are well guarded — each aborts unless it replaced exactly once and the payload
       # clears a plausibility floor — but nothing checked that the RESULT still parses. This
       # is the last gate before a push that goes straight to the live site, and a syntax error
@@ -128,7 +128,7 @@ jobs:
 
       # Deliberately the LAST step, and deliberately `if: always()`. This used to sit before
       # "Commit if changed" and end in a bare `exit 1`, which meant crossing the budget would
-      # abort the job BEFORE committing — the refreshed SIP index, market data and rezone
+      # abort the job BEFORE committing — the refreshed market data and rezone
       # index would all be thrown away, and the weekly data refresh would simply stop landing
       # until someone noticed the failed run. A guardrail for slow drift must never be able to
       # halt the pipeline it is watching. Running it last means the data has already shipped
@@ -177,5 +177,5 @@ jobs:
           gh issue create \
             --repo "$GITHUB_REPOSITORY" \
             --title "Weekly data refresh failed — $(date +%Y-%m-%d)" \
-            --body "The scheduled embedded-data refresh (SIP index / Zillow / FRED / pending rezones) failed. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --body "The scheduled embedded-data refresh (Zillow / FRED / pending rezones) failed. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             || true
