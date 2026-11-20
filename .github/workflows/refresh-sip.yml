@@ -1,7 +1,7 @@
 # The file keeps its old name (refresh-sip.yml) so run history and references stay put; the
 # SeattleInProgress index it was named for was dropped 2026-11-19 in favour of a live lookup of
 # Seattle's design review documents in the details window.
-name: Refresh Embedded Data (market data + pending rezones)
+name: Refresh Embedded Data (design proposals + market data + pending rezones)
 
 on:
   schedule:
@@ -40,6 +40,9 @@ jobs:
       # every run. Credentials still persist for the plain `git push` below (v6 moved them to
       # a separate config file, included automatically).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Scan Seattle's permit records for design proposal packets
+        run: bash refresh-dr-index.sh
 
       - name: Fetch and embed market data (Zillow + FRED)
         run: bash refresh-market-data.sh
@@ -128,8 +131,8 @@ jobs:
 
       # Deliberately the LAST step, and deliberately `if: always()`. This used to sit before
       # "Commit if changed" and end in a bare `exit 1`, which meant crossing the budget would
-      # abort the job BEFORE committing — the refreshed market data and rezone
-      # index would all be thrown away, and the weekly data refresh would simply stop landing
+      # abort the job BEFORE committing — the refreshed design proposals, market data and
+      # rezone index would all be thrown away, and the weekly data refresh would simply stop landing
       # until someone noticed the failed run. A guardrail for slow drift must never be able to
       # halt the pipeline it is watching. Running it last means the data has already shipped
       # by the time size is judged.
@@ -177,5 +180,5 @@ jobs:
           gh issue create \
             --repo "$GITHUB_REPOSITORY" \
             --title "Weekly data refresh failed — $(date +%Y-%m-%d)" \
-            --body "The scheduled embedded-data refresh (Zillow / FRED / pending rezones) failed. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --body "The scheduled embedded-data refresh (design proposals / Zillow / FRED / pending rezones) failed. Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             || true

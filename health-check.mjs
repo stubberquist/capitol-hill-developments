@@ -94,8 +94,8 @@ const MAX_SITE_ADDRESSES = 40;
 const EXPECT_MAP = { markers: 1000, sites: 1000 };
 const EXPECT_ANALYTICS = { charts: 8 };
 
-// How stale the embedded data may get before it counts as a failure. REZONE_FETCHED is
-// baked in by the weekly refresh workflow and were read off the live page every
+// How stale the embedded data may get before it counts as a failure. REZONE_FETCHED and
+// DR_FETCHED are baked in by the weekly refresh workflow and were read off the live page every
 // morning without ever being checked against the clock — so if the schedule stopped firing
 // (GitHub disables workflows after ~60 days of repo inactivity, or a YAML edit breaks the
 // trigger) the embedded index would quietly freeze while this reported CLEAN indefinitely.
@@ -419,6 +419,8 @@ const data = interactive ? await evaluate(`({
   // Replaced by the second-visit reading below; the first visit can't see this bug.
   changedSinceVisit: null,
   rezoneFetched: typeof REZONE_FETCHED!=="undefined" ? REZONE_FETCHED : null,
+  drFetched: typeof DR_FETCHED!=="undefined" ? DR_FETCHED : null,
+  drProposals: typeof DR_INDEX!=="undefined" ? Object.keys(DR_INDEX).length : null,
   // The endpoints the deployed page actually reads, for the freshness probes below.
   endpoints: {
     seattle:  typeof API!=="undefined" ? API : null,
@@ -581,7 +583,7 @@ if (data) {
   // Embedded-data staleness. Absent or unparseable dates are a problem in their own right:
   // the constants are written by the refresh workflow, so a missing one means the bake step
   // changed shape or stopped running.
-  for (const [k, label] of [["rezoneFetched", "rezone index"]]) {
+  for (const [k, label] of [["rezoneFetched", "rezone index"], ["drFetched", "design proposal index"]]) {
     const raw = data[k];
     const t = raw ? Date.parse(raw) : NaN;
     if (!Number.isFinite(t)) { problems.push(`${label}: no usable ${k} on the page (got ${JSON.stringify(raw)})`); continue; }
@@ -589,6 +591,10 @@ if (data) {
     if (days > MAX_DATA_AGE_DAYS)
       problems.push(`${label} is ${days} days old (${raw}) — the weekly refresh workflow has probably stopped running`);
   }
+  // 1,093 on 2026-11-19. The refresh refuses to bake fewer than 400, so a low count here means
+  // the page lost the index (a bad merge, or the unpacker broke), not that Seattle has fewer.
+  if (!(data.drProposals >= 400))
+    problems.push(`design proposal index has ${data.drProposals} entries (expected >= 400) — cards have lost their Design Proposal links`);
 }
 // The map and analytics probes are separately catch(() => null)'d, so "the probe threw" and
 // "the view is broken" both land here rather than vanishing.
