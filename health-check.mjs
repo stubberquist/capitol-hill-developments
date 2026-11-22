@@ -591,7 +591,7 @@ if (data) {
     if (days > MAX_DATA_AGE_DAYS)
       problems.push(`${label} is ${days} days old (${raw}) — the weekly refresh workflow has probably stopped running`);
   }
-  // 1,093 on 2026-11-19. The refresh refuses to bake fewer than 400, so a low count here means
+  // 1,163 on 2026-11-19 (1,093 before -EG records were linked). The refresh refuses to bake fewer than 400, so a low count here means
   // the page lost the index (a bad merge, or the unpacker broke), not that Seattle has fewer.
   if (!(data.drProposals >= 400))
     problems.push(`design proposal index has ${data.drProposals} entries (expected >= 400) — cards have lost their Design Proposal links`);
