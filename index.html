@@ -845,7 +845,9 @@
     .dr-docs:empty { display: none; }
     .dr-docs .dr-cover { display: block; margin-bottom: 8px; }
     .dr-docs .dr-cover img {
-      display: block; width: 100%; max-height: 260px; object-fit: cover;
+      /* The box is sized before the picture arrives (aspect-ratio), so its load can't push
+         the description and values down 290 px mid-read. */
+      display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 260px; object-fit: cover;
       border-radius: 8px; border: 1px solid var(--border); background: var(--surface2);
     }
     .dr-docs .dr-links { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
@@ -2266,7 +2268,7 @@ async function fetchBellevueSiteHistory(subarea) {
   try {
     const features = await arcFetchAll({
       where: `SUBAREA = '${subarea}'`,
-      outFields: "PERMITNUMBER,SITEADDRESS,APPLIEDDATE,ISSUEDDATE,FINALEDDATE,PERMITTYPE,PERMITTYPEDESCRIPTION,PERMITSTATUS,VALUATION",
+      outFields: "PERMITNUMBER,SITEADDRESS,APPLIEDDATE,ISSUEDDATE,FINALEDDATE,PERMITTYPE,PERMITTYPEDESCRIPTION,PERMITSTATUS,VALUATION,PROJECTDESCRIPTION,DWELLINGUNITSCREATED,MBPSTATUSSITE",
       outSR: "4326",
       returnGeometry: "false",
       orderByFields: "ISSUEDDATE DESC",
@@ -2600,7 +2602,7 @@ function drDocsHTML(rows, fallback) {
   // Every library document downloads rather than opens (see .dl-notice), hence ↓ and no new tab.
   const dl  = (href, what, size, title, label) =>
     `<a class="card-link" href="${href}" data-dl="${what}" data-size="${esc(size.slice(3))}"${title ? ` title="${esc(title)}"` : ""}>${label}${size} ↓</a>`;
-  const fbSize = fallback && fallback.mb != null ? drSizeLabel(fallback.mb > 0 ? fallback.mb * 1e6 : 5e5) : "";
+  const fbSize = fallback ? drIndexSize(fallback.mb) : "";
   const links = [];
   if (proposal) links.push(dl(url(proposal), "design proposal", drSizeLabel(proposal.documentFileSize), proposal.documentType, `Design proposal${yr(proposal)}`));
   else if (fallback) links.push(dl(esc(fallback.url), "design proposal", fbSize, "Filed on a linked design review record (usually the project's Early Design Guidance record)", "Design proposal"));
@@ -2621,6 +2623,10 @@ async function loadDrDocs(p) {
   if (!el || p._city === "bellevue") return;
   const ids = mupIds(p.relatedmup);
   if (!ids.length) return;
+  // The weekly index already knows whether there's a packet, so show that link at once; the
+  // library's answer (year, exact size, board report, rendering) replaces it when it lands.
+  // Otherwise the section was blank for as long as the library took — 30 s if it hung.
+  el.innerHTML = drDocsHTML([], drProposal(p));
   const settled = await Promise.allSettled(ids.map(drDocsFor));
   if (!el.isConnected) return;
   const rows = settled.flatMap(r => r.status === "fulfilled" ? r.value : []);
@@ -2645,12 +2651,14 @@ function drSizeLabel(bytes) {
   if (!(b > 0)) return "";
   return ` · ${b >= 1e6 ? Math.round(b / 1e6) + " MB" : Math.max(1, Math.round(b / 1e3)) + " KB"}`;
 }
+// The weekly index keeps whole megabytes, so 0 means "under half a megabyte", not a size.
+const drIndexSize = mb => mb == null ? "" : mb > 0 ? drSizeLabel(mb * 1e6) : " · under 1 MB";
 // Card / popup link to the packet. No target="_blank": the city sends it as a download,
 // so a new tab would just sit blank; the page stays put and the notice below explains.
 function drProposalLink(p) {
   const d = drProposal(p);
   if (!d) return "";
-  const size = d.mb == null ? "" : drSizeLabel(d.mb > 0 ? d.mb * 1e6 : 5e5);
+  const size = drIndexSize(d.mb);
   return `<a class="card-link pdf" href="${esc(d.url)}" data-dl="design proposal" data-size="${esc(size.slice(3))}" title="Design review proposal packet (PDF download from Seattle's permit records)">Design Proposal${size} ↓</a>`;
 }
 
@@ -2837,22 +2845,30 @@ function expiryMissing() {
 // could become Completed, and the YTD value quietly stopped growing. Two small counts over the
 // last 45 days say whether that is the case today. Asked once per session; a failure to ask
 // leaves both false, because "we couldn't check" is not a gap worth announcing.
+// 45 days is slow to notice a field that stops: from 2026-11-16 the layer kept adding new
+// permits but stopped updating existing ones, so nothing was marked Completed and the 45-day
+// count would have stayed above zero until New Year. Two 6-day counts catch it within the
+// week: still issuing (100+) with almost no completions (5 or fewer; a normal weekday has
+// 35-82). Same rule as health-check.mjs, which checks this notice against the City's feed.
 const BELLEVUE_GAPS = { values: false, finals: false };
 let bellevueGapsCheck = null, bellevueGapsSettled = false;   // settled: read by health-check.mjs
 function checkBellevueGaps() {
   return bellevueGapsCheck ||= (async () => {
     try {
       const since = isoDate(new Date(Date.now() - 45 * 864e5)), today = isoDate(new Date());
+      const recent = isoDate(new Date(Date.now() - 6 * 864e5));
       const count = (field, name) => ({ statisticType: "count", onStatisticField: field, outStatisticFieldName: name });
-      const [[issued], [finaled]] = await Promise.all([
+      const [[issued], [finaled], [issued6], [finaled6]] = await Promise.all([
         arcStats(`ISSUEDDATE >= DATE '${since}'`, [count("ObjectId", "n"), count("VALUATION", "val")]),
         arcStats(`FINALEDDATE >= DATE '${since}' AND FINALEDDATE <= DATE '${today}'`, [count("ObjectId", "n")]),
+        arcStats(`ISSUEDDATE >= DATE '${recent}'`, [count("ObjectId", "n")]),
+        arcStats(`FINALEDDATE >= DATE '${recent}' AND FINALEDDATE <= DATE '${today}'`, [count("ObjectId", "n")]),
       ]);
       // 200: Bellevue issues ~1,400 permits a month, so fewer means the layer itself is thin
       // and the freshness of its fields can't be judged from it.
       if (!issued || issued.n < 200) return;
       BELLEVUE_GAPS.values = issued.val === 0;
-      BELLEVUE_GAPS.finals = !finaled || finaled.n === 0;
+      BELLEVUE_GAPS.finals = !finaled || finaled.n === 0 || (issued6?.n >= 100 && !!finaled6 && finaled6.n <= 5);
       if ((BELLEVUE_GAPS.values || BELLEVUE_GAPS.finals) && currentCity === "bellevue") scheduleSourceRepaint();
     } catch { /* leave both false */ } finally { bellevueGapsSettled = true; }
   })();
@@ -4101,7 +4117,10 @@ function siteSiblingsOf(p) {
   for (const x of SITE_MEMBERS.get(key) || []) out.set(x.permitnum, x);
   if (historyLoaded) {
     const addrs = SITE_ADDRS.get(key) || new Set([normalizeAddr(p)]);
-    for (const a of addrs) for (const x of addressIndex.get(a) || []) out.set(x.permitnum, x);
+    // History only adds permits the main list doesn't hold. A history row is a thinner copy of
+    // the same permit (no coordinates; before 2026-11 no description or unit count for
+    // Bellevue), and letting it replace the main-list one blanked 178 Downtown descriptions.
+    for (const a of addrs) for (const x of addressIndex.get(a) || []) if (!out.has(x.permitnum)) out.set(x.permitnum, x);
   }
   out.delete(p.permitnum);
   return [...out.values()];
@@ -5992,24 +6011,31 @@ function renderAnalytics(d) {
   const priceFmt = n => "$" + Math.round(n).toLocaleString();
   const cityCap  = currentCity === "bellevue" ? "Bellevue" : "Seattle";
 
+  // Early January has nothing to compare: both cities' feeds run a few days behind and Jan 1
+  // is a holiday, so the cards read "0, −100.0% vs 9" and warned that valuations were missing.
+  // For the first two weeks, or until this year has a filing, say so instead of a percentage.
+  const now = new Date();
+  const tooEarly = (now.getMonth() === 0 && now.getDate() <= 14) || !d.ytd.permits;
+  const vsNote = txt => tooEarly ? "too early in the year to compare with last year" : `vs ${txt} same period last year`;
   const cards = [
     { label: "Permits Filed YTD",       cur: d.ytd.permits, prev: d.ytdPrior.permits, fmt: n => n.toLocaleString(),
-      note: `vs ${d.ytdPrior.permits.toLocaleString()} same period last year`,
+      note: vsNote(d.ytdPrior.permits.toLocaleString()),
       desc: "Permit applications submitted since Jan 1." },
     { label: "Housing Units Added YTD", cur: d.ytd.units,   prev: d.ytdPrior.units,   fmt: intFmt,
-      note: `vs ${intFmt(d.ytdPrior.units)} same period last year`,
+      note: vsNote(intFmt(d.ytdPrior.units)),
       desc: currentCity === "bellevue"
         ? "Homes created by permits filed this year, from the dwelling-unit count Bellevue records on each permit."
         : "Homes created by permits filed this year. Seattle records a project's unit count on every permit in it, including the demolition record, so paired demolition entries are collapsed to avoid counting the same homes twice." },
     { label: "Total Project Value YTD", cur: d.ytd.value,   prev: d.ytdPrior.value,   fmt: fmtValue,
-      note: `vs ${fmtValue(d.ytdPrior.value)} same period last year`,
+      note: vsNote(fmtValue(d.ytdPrior.value)),
       desc: "Combined estimated cost of this year's filings.",
       warn: currentCity === "bellevue" && BELLEVUE_GAPS.values
         ? "Bellevue isn't publishing values for recent permits right now — this figure is missing the last several weeks."
-        : d.ytd.value < d.ytdPrior.value * 0.1
+        : !tooEarly && d.ytd.value < d.ytdPrior.value * 0.1
         ? "The city hasn't recorded a valuation for most of this year's permits yet — this figure is incomplete."
         : null },
   ];
+  if (tooEarly) for (const c of cards) c.prev = null;   // no percentage badge
   if (d.pipeline != null) {
     cards.push({ label: "Units in Pipeline", cur: d.pipeline, prev: null, fmt: intFmt,
                  note: "in permits awaiting approval (last 5 yrs)",
@@ -6702,7 +6728,12 @@ async function init() {
   }
   // Everything below city/view/scope. Runs after the neighbourhood dropdown has been
   // populated for the restored city, so a deep-linked nb= can actually be selected.
-  restoreFilterState(urlParams, stored);
+  // A link that names any filter is a complete description of a view: someone else's shared
+  // link opened here must not be narrowed by this browser's last search or flags
+  // (?proposal=1 after an earlier search for "2300 7th" listed 2 permits, not 1,582). Saved
+  // filters still restore on a bare URL, or one that only picks the city, view or scope.
+  const urlHasFilter = STATE_KEYS.some(k => !["city", "view", "scope"].includes(k) && urlParams.has(k));
+  restoreFilterState(urlParams, urlHasFilter ? {} : stored);
   if (view && view !== "grid") setView(view);
   syncCityOnlyButtons();
   try {

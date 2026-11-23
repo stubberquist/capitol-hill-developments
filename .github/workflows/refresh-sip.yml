@@ -29,6 +29,9 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # A normal run is 3-5 minutes. Without this, a City API that accepts connections and never
+    # answers would hold the job until GitHub's 6-hour limit.
+    timeout-minutes: 30
     permissions:
       contents: write
       issues: write
@@ -171,6 +174,18 @@ jobs:
           if [ "$SIZE" -gt "$SOFT" ]; then
             echo "::warning::index.html is $SIZE bytes gzipped, over the $SOFT soft budget. Worth trimming — hard ceiling is $HARD."
           fi
+
+      # A failure issue used to stay open until someone closed it by hand (#1, #2, #6). The next
+      # run that gets all the way through is the evidence that it's over.
+      - name: Close the failure issue after a clean run
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "Weekly data refresh failed in:title" --json number -q '.[].number' \
+            | while read -r N; do
+                gh issue close "$N" --repo "$GITHUB_REPOSITORY" --comment "This week's refresh ran clean — closing. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" || true
+              done || true
 
       - name: Open issue on failure
         if: failure()

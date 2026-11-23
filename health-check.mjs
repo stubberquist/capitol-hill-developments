@@ -180,6 +180,9 @@ function launch() {
   profileDir = join(tmpdir(), `chd-health-${process.pid}-${Date.now()}`);
   chrome = spawn(CHROME, [
     "--headless", "--disable-gpu", "--no-sandbox",
+    // A fresh profile fetches Chrome's certificate components in the background; when they land
+    // mid-load the verifier is swapped and the request in flight dies (see browserBlip below).
+    "--disable-component-update",
     "--remote-debugging-port=0", "--window-size=1400,1000",
     `--user-data-dir=${profileDir}`, "about:blank",
   ], { stdio: ["ignore", "pipe", "pipe"] });
@@ -691,11 +694,19 @@ for (const [k, st] of Object.entries(data?.sources || {})) {
   const n = uniq([...netFailures, ...consoleErrors]).filter(f => handledFailure(f) && UPSTREAM[k].match.some(m => f.includes(m))).length;
   if (n) { transient[k] = `${n} request(s) timed out or failed at the City; the source loaded from the rest`; abortOnly.add(k); }
 }
+// Chrome's own plumbing, not the site: on 2026-11-23 a fresh profile swapped its certificate
+// verifier while the page was loading, the document request died with ERR_CERT_VERIFIER_CHANGED,
+// the visit carried on and every count was healthy — and "1 failed request(s)" turned a good
+// weekly refresh red and opened an issue. Safe to excuse: a page that really failed to load
+// still fails on "never became interactive", the second visit, and every data floor.
+const browserBlip = s => /ERR_CERT_VERIFIER_CHANGED|ERR_NETWORK_CHANGED/.test(s);
+const blips = uniq([...netFailures, ...consoleErrors]).filter(browserBlip).length;
+if (blips) transient.browser = `${blips} request(s) interrupted by Chrome changing its certificate verifier or network`;
 const fromUpstream = s => Object.keys(upstream).some(k => UPSTREAM[k].match.some(m => s.includes(m)));
-const fromTransient = s => Object.keys(transient).some(k => UPSTREAM[k].match.some(m => s.includes(m))
+const fromTransient = s => Object.keys(transient).some(k => UPSTREAM[k]?.match.some(m => s.includes(m))
   && (!abortOnly.has(k) || handledFailure(s)));
-const siteConsole = uniq(consoleErrors).filter(s => !fromUpstream(s) && !fromTransient(s));
-const siteNet = uniq(netFailures).filter(s => !fromUpstream(s) && !fromTransient(s));
+const siteConsole = uniq(consoleErrors).filter(s => !fromUpstream(s) && !fromTransient(s) && !browserBlip(s));
+const siteNet = uniq(netFailures).filter(s => !fromUpstream(s) && !fromTransient(s) && !browserBlip(s));
 if (siteConsole.length) problems.push(`${siteConsole.length} console error(s)`);
 if (uniq(exceptions).length) problems.push(`${uniq(exceptions).length} uncaught exception(s)`);
 if (siteNet.length) problems.push(`${siteNet.length} failed request(s)`);
@@ -759,20 +770,36 @@ for (const f of FRESHNESS) {
 // permits issued in August, 92 of 1,415 carry a VALUATION; issued since 09-08, 0 of 1,522; and
 // no FINALEDDATE after 09-04 against ~1,200 a month before. Same two 45-day counts the page
 // makes for its own notice — asked here directly, so the page's answer can be checked too.
+// The 45-day counts take six weeks to notice a field that stops. From 2026-11-16 the layer kept
+// inserting new permits but stopped updating existing ones: 0 completion dates on every weekday
+// (35-82 a day before), nothing issued except on its application day, no values. So also two
+// 6-day counts: permits still being issued (>= 100) with almost no completions (<= 5). Over
+// 09-28 -> 11-23 that first fires on 11-20 and never earlier (lowest healthy count 120, and a
+// holiday week keeps two working days in the window); a real closure drops issuance below 100.
 if (ep.bellevue) {
   const D = ms => new Date(ms).toISOString().slice(0, 10), since = D(Date.now() - 45 * 86400000);
+  const recent = D(Date.now() - 6 * 86400000), today = D(Date.now());
   const stat = (where, stats) => fetch(ep.bellevue + "?f=json&where=" + encodeURIComponent(where) + "&outStatistics=" +
       encodeURIComponent(JSON.stringify(stats.map(([f, n]) => ({ statisticType: "count", onStatisticField: f, outStatisticFieldName: n })))),
       { signal: AbortSignal.timeout(8000) }).then(r => r.json()).then(j => j.features?.[0]?.attributes);
   try {
-    const [issued, finaled] = await Promise.all([
+    const [issued, finaled, issued6, finaled6] = await Promise.all([
       stat(`ISSUEDDATE >= DATE '${since}'`, [["ObjectId", "n"], ["VALUATION", "val"]]),
-      stat(`FINALEDDATE >= DATE '${since}' AND FINALEDDATE <= DATE '${D(Date.now())}'`, [["ObjectId", "n"]]),
+      stat(`FINALEDDATE >= DATE '${since}' AND FINALEDDATE <= DATE '${today}'`, [["ObjectId", "n"]]),
+      stat(`ISSUEDDATE >= DATE '${recent}'`, [["ObjectId", "n"]]),
+      stat(`FINALEDDATE >= DATE '${recent}' AND FINALEDDATE <= DATE '${today}'`, [["ObjectId", "n"]]),
     ]);
     if (issued && issued.n >= 200) {
       const gaps = [];
       if (issued.val === 0) gaps.push(`no project values (0 of ${issued.n.toLocaleString()} permits issued in the last 45 days)`);
       if (!finaled || finaled.n === 0) gaps.push("no completion dates in the last 45 days");
+      else if (issued6?.n >= 100 && finaled6 && finaled6.n <= 5) {
+        // Named by the last date that did arrive, so the line reads the same every day it lasts.
+        const newest = await fetch(arcMax(ep.bellevue, "FINALEDDATE").replace("where=1%3D1", "where=" + encodeURIComponent(`FINALEDDATE <= DATE '${today}'`)),
+          { signal: AbortSignal.timeout(8000) }).then(r => r.json()).then(j => j.features?.[0]?.attributes?.m).catch(() => null);
+        gaps.push(`no completion dates since ${Number.isFinite(newest) ? D(newest) : "last week"} while still issuing permits ` +
+          `(${finaled6.n} completed against ${issued6.n} issued in the last 6 days) — existing permits have stopped updating`);
+      }
       freshness["Bellevue fields"] = gaps.length ? gaps.join("; ") : `values on ${issued.val} of ${issued.n} recent permits, ${finaled.n} recent completions`;
       if (gaps.length) {
         upstreamProblems.push(`Bellevue is publishing ${gaps.join(" and ")}`);

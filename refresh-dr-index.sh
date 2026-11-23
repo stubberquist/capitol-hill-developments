@@ -73,14 +73,23 @@ def fetch_docs(recs):
     out, failed = {}, []
     def one(i):
         try:
-            d = get_json(API + urllib.parse.quote(i, safe=""))
+            # 20 s, not the default 60: a lookup normally answers in under a second, and three
+            # tries at 60 s across 2,485 records is hours if the library accepts and never replies.
+            d = get_json(API + urllib.parse.quote(i, safe=""), timeout=20)
             return i, d if isinstance(d, list) else [], None
         except Exception as e:
             return i, None, str(e)
     with cf.ThreadPoolExecutor(6) as ex:
-        for i, d, err in ex.map(one, recs):
+        for n, (i, d, err) in enumerate(ex.map(one, recs), 1):
             if err: failed.append(i)
             else: out[i] = d
+            # Fail fast when the library is plainly down, rather than retrying every record
+            # before the 5% rule below gets a look. Checked from the 50th result so a library
+            # that hangs (72 s per record across three tries) is called in ~10 minutes, inside
+            # the workflow's 30-minute limit.
+            if n in (50, 100, 150, 200) and len(failed) > n * 0.2:
+                ex.shutdown(wait=False, cancel_futures=True)
+                sys.exit(f"ERROR: {len(failed)} of the first {n} lookups failed — the document library looks down; not replacing the index")
     return out, failed
 
 t0 = time.time()
@@ -174,6 +183,10 @@ except Exception as e:
 extra = sorted({r for v in linked.values() for r in v} - set(docs))
 more, failed2 = fetch_docs(extra)
 docs.update(more)
+# Same rule as the first batch: 70 packets exist only on these records (2026-11-19), and losing
+# the batch would drop their links with nothing but a log line.
+if len(failed2) > len(extra) * 0.05:
+    sys.exit(f"ERROR: {len(failed2)} of {len(extra)} linked-record lookups failed — not replacing the index")
 print(f"linked records: {n_same} same-number -EG, {n_named} named in files, {n_ss} land-use records linked via Shaping Seattle; "
       f"{len(extra)} extra records looked up, {len(failed2)} failed")
 
