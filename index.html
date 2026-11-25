@@ -88,6 +88,15 @@
       font-size: 14px;
       min-height: 100vh;
     }
+    /* A hairline down the right edge on touch devices, so the page ends on a drawn line
+       where a phone puts its browser controls at the side (iPhone Duo) instead of the
+       header band and cards just stopping against the bar. */
+    @media (pointer: coarse) {
+      body::after {
+        content: ""; position: fixed; top: 0; bottom: 0; right: 0; width: 1px;
+        background: var(--border); z-index: 1; pointer-events: none;
+      }
+    }
 
     header {
       background: var(--surface);
