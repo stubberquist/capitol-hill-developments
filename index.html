@@ -92,13 +92,10 @@
        where a phone puts its browser controls at the side (iPhone Duo) instead of the
        header band and cards just stopping against the bar. */
     @media (pointer: coarse) {
-      body::after {
-        /* Runs 200px past the top and bottom: iOS measures a fixed box against the area
-           above the toolbar and home indicator, so top/bottom 0 stopped short of the
-           screen's real bottom edge. */
-        content: ""; position: fixed; top: -200px; bottom: -200px; right: 0; width: 1px;
-        background: var(--border); z-index: 1; pointer-events: none;
-      }
+      /* A border on the page itself, not a fixed overlay: iOS clips fixed boxes above the
+         floating address pill, so a fixed line stopped ~60px short of the screen's bottom
+         (even when sized past it), while scrolling content paints all the way down. */
+      body { border-right: 1px solid var(--border); }
     }
 
     header {
