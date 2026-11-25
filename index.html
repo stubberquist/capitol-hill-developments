@@ -93,7 +93,10 @@
        header band and cards just stopping against the bar. */
     @media (pointer: coarse) {
       body::after {
-        content: ""; position: fixed; top: 0; bottom: 0; right: 0; width: 1px;
+        /* Runs 200px past the top and bottom: iOS measures a fixed box against the area
+           above the toolbar and home indicator, so top/bottom 0 stopped short of the
+           screen's real bottom edge. */
+        content: ""; position: fixed; top: -200px; bottom: -200px; right: 0; width: 1px;
         background: var(--border); z-index: 1; pointer-events: none;
       }
     }
